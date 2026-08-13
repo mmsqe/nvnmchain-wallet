@@ -66,12 +66,33 @@ export type FeeEstimate = {
 }
 
 const FALLBACK_GAS = 300_000n
-const GAS_BUFFER = 30_000n
+const FALLBACK_CONTRACT_GAS = 1_000_000n
+const GAS_BUFFER = 50_000n
 const GAS_PRICE_MULTIPLIER = 2n
 
-export async function estimateTransferFee(
+/**
+ * Estimates the gas + pathUSD fee for a TIP-20 `transfer` on the given token.
+ * (Fees are always paid in pathUSD regardless of which token is being sent.)
+ */
+export async function estimateTokenTransferFee(
+  from: string,
+  token: string,
+  to: string,
+): Promise<FeeEstimate> {
+  return estimateCallFee(from, token, encodeTransfer(to, 1n), FALLBACK_GAS)
+}
+
+/**
+ * Estimates gas + pathUSD fee for an arbitrary contract call (calldata).
+ * Uses `tempo_simulateV1` like transfers, which reports `gasUsed` even when
+ * the call would revert (e.g. insufficient token balance) — so this works
+ * before the account is funded or before the user holds the tokens.
+ */
+export async function estimateCallFee(
   from: string,
   to: string,
+  data: `0x${string}`,
+  fallbackGas: bigint = FALLBACK_CONTRACT_GAS,
 ): Promise<FeeEstimate> {
   let gasPrice: bigint
   try {
@@ -80,14 +101,19 @@ export async function estimateTransferFee(
     gasPrice = 600_000_000n
   }
   const maxFeePerGas = gasPrice * GAS_PRICE_MULTIPLIER
-  const gasUsed = await simulateTransferGas(from, to)
+  const gasUsed = await simulateCallGas(from, to, data, fallbackGas)
   const gasLimit = gasUsed + GAS_BUFFER
   // pathUSD has 6 decimals; gas price is quoted in wei (1e18) → /1e12
   const fee = (gasLimit * maxFeePerGas) / 10n ** 12n
   return { gasLimit, maxFeePerGas, maxPriorityFeePerGas: 0n, fee }
 }
 
-async function simulateTransferGas(from: string, to: string): Promise<bigint> {
+async function simulateCallGas(
+  from: string,
+  to: string,
+  data: `0x${string}`,
+  fallbackGas: bigint,
+): Promise<bigint> {
   try {
     const res = await fetch(RPC_URL, {
       method: 'POST',
@@ -104,8 +130,8 @@ async function simulateTransferGas(from: string, to: string): Promise<bigint> {
                 calls: [
                   {
                     from,
-                    to: PATHUSD,
-                    data: encodeTransfer(to, 1n),
+                    to,
+                    data,
                     value: '0x0',
                   },
                 ],
@@ -119,31 +145,71 @@ async function simulateTransferGas(from: string, to: string): Promise<bigint> {
     const json = await res.json()
     const gasUsed = json?.result?.blocks?.[0]?.calls?.[0]?.gasUsed
     const g = gasUsed ? BigInt(gasUsed) : 0n
-    return g > 0n ? g : FALLBACK_GAS
+    return g > 0n ? g : fallbackGas
   } catch {
-    return FALLBACK_GAS
+    return fallbackGas
   }
 }
 
 /**
- * Sends a pathUSD transfer in a Tempo Transaction signed by the passkey.
- * Fees are paid in pathUSD (the chain's fee token).
+ * Sends an arbitrary contract call (encoded calldata) as a Tempo Transaction
+ * signed by the passkey, with fees paid in pathUSD. Returns the tx hash and
+ * the final on-chain status.
+ */
+export async function sendContractCall(
+  credential: StoredCredential,
+  from: string,
+  to: string,
+  data: `0x${string}`,
+  onSubmitted?: (hash: string) => void,
+): Promise<{ hash: string; status: 'ok' | 'reverted' | 'timeout' }> {
+  const fee = await estimateCallFee(from, to, data)
+  const client = walletClientFor(credential)
+  const hash = await client.sendTransaction({
+    to: to as `0x${string}`,
+    data,
+    value: 0n,
+    feeToken: PATHUSD,
+    gas: fee.gasLimit,
+    maxFeePerGas: fee.maxFeePerGas,
+    maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
+  })
+  onSubmitted?.(hash)
+  try {
+    const receipt = await publicClient.waitForTransactionReceipt({
+      hash,
+      timeout: 60_000,
+    })
+    return {
+      hash,
+      status: receipt.status === 'success' ? 'ok' : 'reverted',
+    }
+  } catch {
+    return { hash, status: 'timeout' }
+  }
+}
+
+/**
+ * Sends a TIP-20 `transfer` of `amount` on `token` in a Tempo Transaction
+ * signed by the passkey. Fees are paid in pathUSD (the chain's fee token).
  *
  * @returns hash plus final on-chain status: 'ok' | 'reverted' | 'timeout'
  */
-export async function sendPathUsd(
+export async function sendToken(
   credential: StoredCredential,
+  token: string,
   to: string,
   amount: bigint,
   fee: FeeEstimate,
+  feeToken: string = PATHUSD,
   onSubmitted?: (hash: string) => void,
 ): Promise<{ hash: string; status: 'ok' | 'reverted' | 'timeout' }> {
   const client = walletClientFor(credential)
   const hash = await client.sendTransaction({
-    to: PATHUSD,
+    to: token as `0x${string}`,
     data: encodeTransfer(to, amount),
     value: 0n,
-    feeToken: PATHUSD,
+    feeToken: feeToken as `0x${string}`,
     gas: fee.gasLimit,
     maxFeePerGas: fee.maxFeePerGas,
     maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
@@ -191,31 +257,129 @@ export async function getHistory(
   address: string,
   limit = 20,
 ): Promise<HistoryResult> {
+  // 1) Prefer the explorer JSON API. Note: the explorer must send CORS
+  //    headers for this to work cross-origin (see the nvnmchain-explorer repo).
   try {
-    const url = `${nvnmchain.blockExplorers!.default.url}/api/v2/addresses/${address}/transactions`
+    const url = `${nvnmchain.blockExplorers!.default.url}/address/${address}?format=json&tab=transactions&page=1`
     const res = await fetch(url)
-    if (!res.ok) return { items: [], ok: false }
-    const data = await res.json()
-    const items: any[] = data?.items ?? []
-    return {
-      items: items.slice(0, limit).map((t) => ({
-        hash: t.hash,
-        from: t.from?.hash ?? '',
-        to: t.to?.hash ?? '',
-        status:
-          t.status === 'ok'
-            ? 'ok'
-            : t.status === 'error'
-              ? 'error'
-              : 'pending',
-        timestamp: t.timestamp,
-        fee: t.fee?.value,
-      })),
-      ok: true,
+    if (res.ok) {
+      const data = await res.json()
+      const items: any[] = data?.transactions ?? []
+      return {
+        items: items.slice(0, limit).map((t) => ({
+          hash: t.hash,
+          from: t.from_addr ?? '',
+          to: t.to_addr ?? '',
+          // indexer status: 1 = success, 0 = reverted
+          status: t.status === 1 ? 'ok' : t.status === 0 ? 'error' : 'pending',
+          timestamp: t.timestamp
+            ? new Date(Number(t.timestamp) * 1000).toISOString()
+            : '',
+          fee: t.fee_amount,
+        })),
+        ok: true,
+      }
     }
+  } catch {
+    // CORS or network failure → fall through to the RPC reconstruction below.
+  }
+
+  // 2) Fallback: reconstruct recent TIP-20 transfer activity from the RPC
+  //    (the RPC allows CORS, unlike the explorer).
+  return getTransferHistory(address, limit)
+}
+
+const TRANSFER_TOPIC =
+  '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
+/** ~13.7 hours at 0.5s blocks — the RPC caps `eth_getLogs` range at 100k. */
+const HISTORY_WINDOW_BLOCKS = 99_000n
+const BLOCK_TIME_SECONDS = 0.5
+
+async function getTransferHistory(
+  address: string,
+  limit = 20,
+): Promise<HistoryResult> {
+  try {
+    const [latestNum, latestBlock] = await Promise.all([
+      publicClient.getBlockNumber(),
+      publicClient.getBlock({ blockTag: 'latest' }).catch(() => null),
+    ])
+    const fromBlock =
+      latestNum > HISTORY_WINDOW_BLOCKS ? latestNum - HISTORY_WINDOW_BLOCKS : 0n
+    const addrTopic = `0x${address.toLowerCase().slice(2).padStart(64, '0')}`
+
+    const [inLogs, outLogs] = await Promise.all([
+      rpcGetLogs({
+        fromBlock: toHex(fromBlock),
+        toBlock: 'latest',
+        topics: [TRANSFER_TOPIC, null, addrTopic],
+      }),
+      rpcGetLogs({
+        fromBlock: toHex(fromBlock),
+        toBlock: 'latest',
+        topics: [TRANSFER_TOPIC, addrTopic],
+      }),
+    ])
+
+    const latestTs = latestBlock ? Number(latestBlock.timestamp) : 0
+    const seen = new Set<string>()
+    const all = [...inLogs, ...outLogs].sort((a, b) => {
+      const d = Number(BigInt(b.blockNumber) - BigInt(a.blockNumber))
+      return d !== 0 ? d : Number(BigInt(b.logIndex ?? 0) - BigInt(a.logIndex ?? 0))
+    })
+
+    const items: HistoryItem[] = []
+    for (const log of all) {
+      const key = `${log.transactionHash}:${log.logIndex ?? 0}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const blockNumber = BigInt(log.blockNumber)
+      // Tempo's RPC includes the block timestamp on logs; approximate when absent.
+      const timestamp = log.blockTimestamp
+        ? new Date(Number(BigInt(log.blockTimestamp)) * 1000).toISOString()
+        : latestTs > 0
+          ? new Date(
+              latestTs * 1000 -
+                Number(latestNum - blockNumber) * BLOCK_TIME_SECONDS * 1000,
+            ).toISOString()
+          : ''
+      items.push({
+        hash: log.transactionHash,
+        from: topicToAddress(log.topics?.[1]),
+        to: topicToAddress(log.topics?.[2]),
+        status: 'ok',
+        timestamp,
+      })
+      if (items.length >= limit) break
+    }
+    return { items, ok: true }
   } catch {
     return { items: [], ok: false }
   }
+}
+
+function toHex(n: bigint): string {
+  return `0x${n.toString(16)}`
+}
+
+function topicToAddress(topic: string | undefined): string {
+  if (!topic || topic.length < 40) return ''
+  return `0x${topic.slice(-40)}`
+}
+
+async function rpcGetLogs(params: unknown): Promise<any[]> {
+  const res = await fetch(RPC_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'eth_getLogs',
+      params: [params],
+    }),
+  })
+  const json = await res.json()
+  return Array.isArray(json?.result) ? json.result : []
 }
 
 /** Attempts the Tempo faucet RPC (not enabled on this canary). */

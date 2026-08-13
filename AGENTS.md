@@ -1,0 +1,143 @@
+# AGENTS.md — NVNM Passkey Wallet
+
+Reminders for anyone (human or agent) working in this repo. Read this first.
+
+## What this chain is
+
+- **NVNM Chain (NVNM Canary) is a fork of [Tempo](https://tempo.xyz)**, not a
+  reimplementation and **not** any pre-existing "nvnmchain" you find on Google.
+  The protocol/technical side is identical to Tempo: EVM + Tempo Transactions
+  (`0x76`), WebAuthn/P-256 signatures, TIP-20 tokens, FeeAMM, stablecoin gas.
+  Only the network identity differs (chain ID, RPC, predeployed token addresses
+  can differ from Tempo mainnet).
+- It runs on MANTRA canary infrastructure — hence the `*.mantrachain.dev` domains.
+
+## Network facts (do not "fix" these)
+
+| | |
+|---|---|
+| Chain ID | `787222` |
+| RPC | `https://rpc.nvnm.canary.mantrachain.dev` |
+| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` (see "Explorer" below) |
+| Fee token | `pathUSD` = `0x20c0000000000000000000000000000000000000` (TIP-20, **6 decimals**) |
+| Transaction type | Tempo Transaction `0x76` (EIP-2718), WebAuthn/P-256 |
+
+- **No native gas token.** `eth_getBalance` returns the Tempo placeholder
+  (`4.242424242424242e75`) — always read balances via TIP-20 `balanceOf`.
+- Fees are paid in **pathUSD**, charged by the Fee Manager; gas is measured with
+  `tempo_simulateV1` (works pre-funding) and the fee reserve is
+  `gasLimit × maxFeePerGas / 1e12` (pathUSD has 6 decimals, gas price is wei).
+- Key precompiles (from `viem/tempo` Addresses):
+  - AccountKeychain `0xaAAAaaAA…0000`, NonceManager `0x4e4F4E4345…`,
+    FeeManager `0xfeec…0000` (hosts the FeeAMM), pathUSD `0x20c0…0000`,
+    TIP20Factory `0x20fc…0000`, StablecoinDex `0xdec0…0000`,
+    TIP403Registry `0x403c…0000`, StorageCredits `0x1060…0000`.
+- Address derivation: `keccak256(pubKeyX ‖ pubKeyY)[12:]` from the passkey's
+  P-256 public key. This matches the chain's WebAuthn address derivation.
+
+## Explorer (we switched from Blockscout)
+
+- Use `https://explorer.nvnm.canary.mantrachain.dev/` — a custom Rust/SQLite
+  explorer (repo `yihuang/nvnmchain-explorer`). The old
+  `blockscout.nvnm.canary.mantrachain.dev` is **dead (HTTP 525)**.
+- **Every page doubles as JSON**: append `?format=json` (or send
+  `Accept: application/json`). Routes: `/address/{addr}`, `/tx/{hash}`,
+  `/token/{addr}`, `/block/{id}`, `/blocks`, `/tokens`, `/search`.
+- Transaction history (what `getHistory` uses):
+  `{EXPLORER_URL}/address/{addr}?format=json&tab=transactions&page=1`
+  → JSON object with a `transactions[]` array. Tx fields: `hash`,
+  `from_addr`, `to_addr` (may be null), `status` (**`1`=success, `0`=reverted**),
+  `timestamp` (**unix seconds**), `fee_amount`, `fee_token`, `block_number`.
+  There is **no Blockscout-style `/api/v2`** anymore.
+- `/api/events` is a **Server-Sent Events stream**, not a JSON REST endpoint.
+- Link URLs: `{EXPLORER_URL}/tx/{hash}` and `{EXPLORER_URL}/address/{addr}`.
+  (`chain.ts` has `explorerTxUrl` / `explorerAddressUrl` helpers.)
+
+## FeeAMM — the important correction
+
+**FeeAMM is NOT a Uniswap v2 constant-product (x·y=k) AMM.** It shares the
+*shape* (pool = two reserves, LP shares, `mint`/`burn`, a swap fn) but prices
+at **fixed, pre-defined rates**, not from reserves.
+
+- Rates (constants on the FeeManager precompile `0xfeec…0000`):
+  - `M = 9970` — fee-swap rate `0.9970` (30 bps), **user token → validator token**
+  - `N = 9985` — rebalance rate `0.9985` (15 bps), **validator token → user token**
+  - `SCALE = 10000`, `MIN_LIQUIDITY = 1000` (permanently locked)
+- Formulas:
+  - fee swap: `amountOut = amountIn * M / SCALE`
+  - rebalance: `amountIn = amountOut * N / SCALE + 1` (round up)
+- **Pools are directional and order matters.** `poolId = keccak256(abi.encode(userToken, validatorToken))`;
+  `Pool(A,B) ≠ Pool(B,A)`. There are **two** pools per token pair.
+  ⚠️ `ox/tempo`'s `PoolId.from` **sorts** addresses (order-independent) — that
+  matches the *StablecoinDex* `pairKey`, **not** the FeeAMM. Don't use it for
+  FeeAMM `totalSupply`/`liquidityBalances`; call on-chain `getPoolId` or
+  compute `keccak256(abi.encode(u, v))` yourself.
+- **Only one public swap direction**: `rebalanceSwap(userToken, validatorToken, amountOut, to)`
+  → returns `amountIn` (validator tokens you pay, user tokens `to` receives).
+  The user→validator "fee swap" happens **only during tx fee collection** by the
+  node; it is **not callable** by users.
+- `mint(userToken, validatorToken, amountValidatorToken, to)` is **single-sided**
+  (validator token only; user tokens are never deposited).
+  - First deposit: `liquidity = amountValidatorToken/2 - MIN_LIQUIDITY`
+    (reserves start `validator=amount, user=0`).
+  - Later: `liquidity = amountValidatorToken * totalSupply / (V + N*U/SCALE)`.
+- `burn(userToken, validatorToken, liquidity, to)` returns the pro-rata share of
+  **both** reserves.
+- **Both tokens must be `currency == "USD"`** (`validate_usd_currency`). A
+  generic memecoin (non-USD) **cannot** be listed in FeeAMM. Keep "memecoin
+  launcher" and "FeeAMM" as separate features.
+- `viem/tempo` has ready helpers: `Actions.amm.{getPool, getLiquidityBalance, rebalanceSwap, rebalanceSwapSync, mint, mintSync, burn, burnSync}` plus `watch*` event helpers. Prefer these over hand-rolled ABIs.
+
+## TIP-20 / memecoin launcher
+
+- TIP-20 = ERC-20 extended for Tempo (memo transfers, rewards, pause, transfer
+  policies, `currency`, `quoteToken`, `logoURI`, supply cap, roles).
+- Tokens are **not deployed as contracts** — they're created by the **TIP20Factory**
+  precompile `0x20fc…0000`:
+  `createToken(name, symbol, currency, quoteToken, admin, salt[, logoURI]) → address`.
+  Address = `0x20c0…` prefix + token id, deterministic from
+  `getTokenAddress(sender, salt)`.
+- `viem/tempo` `Actions.token.create` / `createSync` wrap this and
+  `createSync.extractEvent` gives the `TokenCreated` event → new token address.
+- After creation the `admin` holds `DEFAULT_ADMIN_ROLE` — **not** `ISSUER_ROLE`.
+  To mint, the admin must first `grantRole(keccak256("ISSUER_ROLE"), admin)` to
+  itself (the Launch UI exposes a "Grant ISSUER_ROLE" step). `ISSUER_ROLE = 0x114e74f6…aa122`.
+- Typical memecoin flow: `createToken` → `grantRole(ISSUER_ROLE, self)` →
+  `mint` initial supply to the creator → (optionally) list.
+- `quoteToken` defaults to pathUSD. If `currency` is `"USD"`, the `quoteToken`
+  must also be USD-denominated.
+
+## Wallet architecture (don't break this)
+
+- Stack: `viem` + `viem/tempo`/`ox/tempo` (Tempo tx `0x76`, WebAuthn P-256,
+  TIP-20), React 19 + Vite, GH Pages deploy (`GH_PAGES=1 npm run build`).
+- `src/chain.ts` — chain config, URLs, formatting helpers (single source of truth).
+- `src/lib/client.ts` — `publicClient` (no account), `walletClientFor(credential)`
+  (passkey account via `Account.fromWebAuthnP256`, `chain.extend({ feeToken: PATHUSD })`),
+  plus `estimateCallFee`/`sendContractCall` (generic contract calls via `tempo_simulateV1`).
+- `src/lib/tip20.ts` — TIP-20 create/mint/metadata + `ISSUER_ROLE` grant.
+- `src/lib/feeamm.ts` — FeeAMM reads/writes (`poolIdOf` is **order-dependent**,
+  matching the chain's `getPoolId`), `quoteRebalance`, mint/burn/rebalanceSwap.
+- `src/lib/portfolio.ts` — localStorage tracking of "my tokens" and "my
+  positions" (the chain has no per-address index; token addresses come from a
+  random salt and LP balances are keyed by pool hash). Re-enriched from chain.
+- `src/components/` — `LaunchPanel` (create token), `SwapPanel` (rebalance),
+  `PoolPanel` (single-sided liquidity), `MyTokens`/`MyPositions` (persisted
+  lists), `SendPanel`, `ActivityList`.
+- `src/lib/passkey.ts` — WebAuthn credential create/get; `src/lib/keystore.ts` — local storage.
+- Fees are paid in pathUSD; every `sendTransaction` sets `feeToken: PATHUSD`.
+- Build/checks: `npm run build` (tsc + vite), `npm run probe` (live broadcast
+  pipeline), `npm run e2e` (Playwright virtual authenticator).
+- Passkeys are bound to origin (`rpId`); `localhost` creds ≠ deployed creds.
+
+## Gotchas checklist
+
+- [ ] Read balances via TIP-20 `balanceOf`, never `eth_getBalance`.
+- [ ] pathUSD decimals = **6**, not 18.
+- [ ] FeeAMM pool id is **order-dependent**; two pools per pair.
+- [ ] FeeAMM swaps are **fixed-rate**, not `x·y=k`; no price impact/slippage
+      from reserves — only the flat `M`/`N` rates.
+- [ ] FeeAMM `mint` takes **validator tokens only**; the user→validator
+      direction is not user-callable.
+- [ ] FeeAMM requires **USD** currency on both tokens.
+- [ ] Explorer tx `status` is `1|0` (not strings); `timestamp` is unix seconds.

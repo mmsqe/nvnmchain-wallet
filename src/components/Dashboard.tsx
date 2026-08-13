@@ -6,6 +6,20 @@ import { getPathUsdBalance, getHistory, tryFaucet, type HistoryResult } from '..
 import { formatUnits, shortAddress, explorerAddressUrl, explorerTxUrl, PATHUSD } from '../chain'
 import { SendPanel } from './SendPanel'
 import { ActivityList } from './ActivityList'
+import { LaunchPanel } from './LaunchPanel'
+import { SwapPanel } from './SwapPanel'
+import { PoolPanel } from './PoolPanel'
+import { MyTokens } from './MyTokens'
+import { MyPositions } from './MyPositions'
+
+type Tab = 'wallet' | 'launch' | 'swap' | 'pool'
+
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'wallet', label: 'Wallet' },
+  { id: 'launch', label: 'Launch' },
+  { id: 'swap', label: 'Swap' },
+  { id: 'pool', label: 'Pool' },
+]
 
 export function Dashboard({
   credential,
@@ -22,6 +36,7 @@ export function Dashboard({
   const [faucetMsg, setFaucetMsg] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  const [tab, setTab] = useState<Tab>('wallet')
 
   const refresh = useCallback(async () => {
     try {
@@ -78,7 +93,21 @@ export function Dashboard({
       </header>
 
       <main className="dashboard">
-        <section className="card account-card">
+        <nav className="tabs" aria-label="Sections">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`tab ${tab === t.id ? 'active' : ''}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+
+        {tab === 'wallet' && (
+          <>
+            <section className="card account-card">
           <div className="account-head">
             <div>
               <span className="eyebrow">Passkey account</span>
@@ -122,7 +151,7 @@ export function Dashboard({
         <SendPanel
           credential={credential}
           address={address}
-          balance={balance}
+          pathUsdBalance={balance}
           onSent={() => {
             setRefreshKey((k) => k + 1)
             refresh()
@@ -130,6 +159,26 @@ export function Dashboard({
         />
 
         <ActivityList result={history} address={address} onRefresh={refresh} />
+          </>
+        )}
+
+        {tab === 'launch' && (
+          <>
+            <LaunchPanel credential={credential} address={address} />
+            <MyTokens credential={credential} address={address} />
+          </>
+        )}
+
+        {tab === 'swap' && (
+          <SwapPanel credential={credential} address={address} />
+        )}
+
+        {tab === 'pool' && (
+          <>
+            <PoolPanel credential={credential} address={address} />
+            <MyPositions address={address} />
+          </>
+        )}
       </main>
     </div>
   )

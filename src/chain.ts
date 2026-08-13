@@ -3,7 +3,7 @@ import { tempo } from 'viem/tempo/chains'
 
 export const CHAIN_ID = 787222
 export const RPC_URL = 'https://rpc.nvnm.canary.mantrachain.dev'
-export const EXPLORER_URL = 'https://blockscout.nvnm.canary.mantrachain.dev'
+export const EXPLORER_URL = 'https://explorer.nvnm.canary.mantrachain.dev'
 
 /**
  * NVNM Canary — a Tempo-compatible L1 (EVM + Tempo Transactions).
@@ -24,7 +24,7 @@ export const nvnmchain = defineChain({
     default: { http: [RPC_URL] },
   },
   blockExplorers: {
-    default: { name: 'Blockscout', url: EXPLORER_URL },
+    default: { name: 'nvnmchain Explorer', url: EXPLORER_URL },
   },
 })
 
@@ -39,7 +39,11 @@ export function explorerAddressUrl(address: string): string {
   return `${EXPLORER_URL}/address/${address}`
 }
 
-export function formatUnits(value: bigint, decimals = 6): string {
+export function formatUnits(
+  value: bigint | null | undefined,
+  decimals = 6,
+): string {
+  if (value == null) return '—'
   const negative = value < 0n
   const abs = negative ? -value : value
   const s = abs.toString().padStart(decimals + 1, '0')

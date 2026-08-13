@@ -15,7 +15,7 @@ the same scheme used by [Tempo](https://wallet.tempo.xyz/) and its
 |---|---|
 | Chain ID | `787222` |
 | RPC | `https://rpc.nvnm.canary.mantrachain.dev` |
-| Explorer | `https://blockscout.nvnm.canary.mantrachain.dev` |
+| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` |
 | Fee token | `pathUSD` (`0x20c0000000000000000000000000000000000000`) |
 | Transaction type | Tempo Transaction (`0x76`) — WebAuthn/P-256 signatures |
 
@@ -43,13 +43,25 @@ fees in `pathUSD` via the Fee Manager.
 - **Fee-aware Max** — gas is measured via `tempo_simulateV1` (works before
   the account is funded), the pathUSD fee reserve is computed deterministically
   (`gasLimit × maxFeePerGas / 1e12`), and Max leaves room for the fee.
-- **Send pathUSD** — one passkey prompt per transaction; fees are paid in
-  `pathUSD`; broadcasts a type-`0x76` Tempo Transaction and reports the final
-  on-chain status (confirmed / reverted / pending) instead of failing silently.
+- **Send any TIP-20 token** — one passkey prompt per transaction; fees are
+  paid in `pathUSD`; broadcasts a type-`0x76` Tempo Transaction and reports the
+  final on-chain status (confirmed / reverted / pending) instead of failing
+  silently. The token field accepts any TIP-20 address (with pathUSD and your
+  created tokens suggested).
 - **Balance** — live `pathUSD` balance via the TIP-20 precompile.
-- **Activity** — recent transactions from Blockscout.
+- **Activity** — recent transactions from the nvnmchain explorer.
 - **Request funds** — attempts the Tempo faucet RPC (`tempo_fundAddress`);
   currently not enabled on the canary, so it explains how to fund.
+- **Launch a token** — create a TIP-20 permissionlessly via the factory
+  precompile (name / symbol / currency / logo), predict the deterministic
+  address, grant yourself `ISSUER_ROLE`, and mint supply.
+- **Swap (FeeAMM)** — the user-callable `rebalanceSwap` direction
+  (validator token → user token) at the fixed 0.9985 rate.
+- **Pool (FeeAMM)** — single-sided liquidity: deposit validator tokens to
+  create/seed a directional pool, view your LP position, and burn it back.
+- **My tokens & positions** — the Launch and Pool tabs remember what you've
+  created and provided liquidity to (locally, in this browser) and re-enrich
+  with live balances, supplies, reserves, and LP share.
 
 ## Quick start
 
@@ -124,7 +136,7 @@ the transaction, rejecting only for missing funds.
 - [viem](https://viem.sh) + `viem/tempo` / `ox/tempo` — Tempo Transactions,
   TIP-20, fee tokens, WebAuthn/P-256 accounts
 - React 19 + Vite
-- Blockscout API v2 for explorer data
+- nvnmchain explorer JSON API (`?format=json`) for explorer data
 
 ## Notes
 

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { isAddress, parseUnits } from 'viem'
 import type { StoredCredential } from '../lib/keystore'
-import { estimateTransferFee, sendPathUsd, type FeeEstimate } from '../lib/client'
-import { formatUnits, explorerTxUrl, shortAddress } from '../chain'
+import { estimateTokenTransferFee, sendToken, type FeeEstimate } from '../lib/client'
+import { getTokenBalance, getTokenMeta, type TokenMeta } from '../lib/tip20'
+import { listMyTokens } from '../lib/portfolio'
+import { formatUnits, explorerTxUrl, shortAddress, PATHUSD } from '../chain'
 
 type Phase =
   | 'idle'
@@ -17,61 +19,130 @@ type Phase =
 export function SendPanel({
   credential,
   address,
-  balance,
+  pathUsdBalance,
   onSent,
 }: {
   credential: StoredCredential
   address: string
-  balance: bigint | null
+  pathUsdBalance: bigint | null
   onSent: () => void
 }) {
+  const [token, setToken] = useState(PATHUSD)
+  const [feeToken, setFeeToken] = useState(PATHUSD)
+  const [tokenBalance, setTokenBalance] = useState<bigint | null>(null)
+  const [tokenMeta, setTokenMeta] = useState<TokenMeta | null>(null)
+  const [feeTokenBalance, setFeeTokenBalance] = useState<bigint | null>(null)
   const [to, setTo] = useState('')
   const [amount, setAmount] = useState('')
   const [fee, setFee] = useState<FeeEstimate | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
-  const toTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // (Re)estimate the fee whenever the recipient changes (debounced).
+  const suggestions = [
+    { value: PATHUSD, label: 'pathUSD' },
+    ...listMyTokens().map((t) => ({
+      value: t.token,
+      label: t.symbol ?? t.name ?? shortAddress(t.token),
+    })),
+  ]
+
+  // Load token balance/meta and (re)estimate the fee when the token or
+  // recipient changes (debounced).
   useEffect(() => {
     setFee(null)
-    if (!isAddress(to)) return
+    setTokenBalance(null)
+    setTokenMeta(null)
+    if (!isAddress(token)) return
     setPhase('estimating')
-    if (toTimer.current) clearTimeout(toTimer.current)
-    toTimer.current = setTimeout(async () => {
+    if (timer.current) clearTimeout(timer.current)
+    timer.current = setTimeout(async () => {
       try {
-        const est = await estimateTransferFee(address, to)
-        setFee(est)
+        const [tb, tm] = await Promise.all([
+          getTokenBalance(token, address),
+          getTokenMeta(token),
+        ])
+        setTokenBalance(tb)
+        setTokenMeta(tm)
+        if (isAddress(to)) {
+          try {
+            setFee(await estimateTokenTransferFee(address, token, to))
+          } catch {
+            setFee(null)
+          }
+        }
       } catch {
-        setFee(null)
+        /* transient RPC hiccup */
       } finally {
         setPhase((p) => (p === 'estimating' ? 'idle' : p))
       }
     }, 350)
     return () => {
-      if (toTimer.current) clearTimeout(toTimer.current)
+      if (timer.current) clearTimeout(timer.current)
     }
-  }, [to, address])
+  }, [token, to, address])
+
+  // Load the fee token's balance (the fee is charged in this token).
+  useEffect(() => {
+    if (feeToken.toLowerCase() === PATHUSD.toLowerCase()) {
+      setFeeTokenBalance(pathUsdBalance)
+      return
+    }
+    let alive = true
+    setFeeTokenBalance(null)
+    if (isAddress(feeToken)) {
+      getTokenBalance(feeToken, address).then((b) => {
+        if (alive) setFeeTokenBalance(b)
+      })
+    }
+    return () => {
+      alive = false
+    }
+  }, [feeToken, pathUsdBalance, address])
 
   const busy = phase === 'signing' || phase === 'broadcasting' || phase === 'submitted'
 
+  const sameToken = token.toLowerCase() === feeToken.toLowerCase()
+
+  function balanceOf(addr: string): bigint | null {
+    const a = addr.toLowerCase()
+    if (a === PATHUSD.toLowerCase()) return pathUsdBalance
+    if (a === token.toLowerCase()) return tokenBalance
+    if (a === feeToken.toLowerCase()) return feeTokenBalance
+    return null
+  }
+
   function handleMax() {
-    if (balance === null || fee === null) return
-    const maxSendable = balance - fee.fee
-    if (maxSendable <= 0n) {
-      setAmount('')
-      setError('Balance is too low to cover the estimated fee — top up first.')
-      return
-    }
-    setAmount(formatUnits(maxSendable))
     setError(null)
+    if (fee === null) return
+    const bal = balanceOf(token)
+    if (bal === null) return
+    if (sameToken) {
+      const maxSendable = bal - fee.fee
+      if (maxSendable <= 0n) {
+        setAmount('')
+        setError('Balance is too low to cover the estimated fee — top up first.')
+        return
+      }
+      setAmount(formatUnits(maxSendable))
+    } else {
+      setAmount(formatUnits(bal))
+    }
   }
 
   async function handleSend() {
     setError(null)
     setTxHash(null)
 
+    if (!isAddress(token)) {
+      setError('Enter a valid token address (0x…).')
+      return
+    }
+    if (!isAddress(feeToken)) {
+      setError('Enter a valid fee-token address (0x…).')
+      return
+    }
     if (!isAddress(to)) {
       setError('Enter a valid recipient address (0x…).')
       return
@@ -80,36 +151,55 @@ export function SendPanel({
     try {
       value = parseUnits(amount || '0', 6)
     } catch {
-      setError('Enter a valid amount in pathUSD.')
+      setError('Enter a valid amount.')
       return
     }
     if (value <= 0n) {
       setError('Amount must be greater than zero.')
       return
     }
-    if (balance === null) {
-      setError('Balance is still loading — try again in a second.')
-      return
-    }
     if (fee === null) {
       setError('Fee estimate unavailable — check the recipient and try again.')
       return
     }
-    const total = value + fee.fee
-    if (total > balance) {
+
+    const sym = tokenMeta?.symbol ?? 'token'
+    const tokenBal = balanceOf(token)
+    const feeBal = balanceOf(feeToken)
+    if (tokenBal === null) {
+      setError('Balance is still loading — try again in a second.')
+      return
+    }
+    if (value > tokenBal) {
+      setError(`Insufficient ${sym} balance (${formatUnits(tokenBal)}).`)
+      return
+    }
+    if (feeBal === null) {
+      setError('Fee-token balance is still loading — try again in a second.')
+      return
+    }
+    if (fee.fee > feeBal) {
       setError(
-        `Insufficient pathUSD. Amount + estimated fee (${formatUnits(fee.fee)} pathUSD) is ${formatUnits(total)}, but you have ${formatUnits(balance)}.`,
+        `Insufficient fee-token balance — you need ${formatUnits(fee.fee)} of the fee token to cover the fee.`,
+      )
+      return
+    }
+    if (sameToken && value + fee.fee > tokenBal) {
+      setError(
+        `Insufficient ${sym}. Amount + fee = ${formatUnits(value + fee.fee)}, but you have ${formatUnits(tokenBal)}.`,
       )
       return
     }
 
     setPhase('signing')
     try {
-      const result = await sendPathUsd(
+      const result = await sendToken(
         credential,
+        token,
         to,
         value,
         fee,
+        feeToken,
         () => setPhase('submitted'),
       )
       setTxHash(result.hash)
@@ -124,8 +214,10 @@ export function SendPanel({
       const msg = e?.shortMessage ?? e?.message ?? String(e)
       const details = e?.details ?? e?.cause?.details ?? ''
       if (/insufficient funds/i.test(details)) {
+        setError('Insufficient fee token to cover the fee. Top up, then try again.')
+      } else if (/insufficient liquidity/i.test(details)) {
         setError(
-          'Insufficient pathUSD for the amount + fee. Top up this address, then try again.',
+          'The FeeAMM pool for this fee token lacks liquidity — provide pathUSD liquidity for the pair first (Pool tab), or pay fees in pathUSD.',
         )
       } else if (/gas limit/i.test(details)) {
         setError(`Gas limit exceeded — please try again. (${details})`)
@@ -139,19 +231,60 @@ export function SendPanel({
     }
   }
 
-  const max = balance !== null ? formatUnits(balance) : '—'
+  const sym = tokenMeta?.symbol ?? (token.toLowerCase() === PATHUSD.toLowerCase() ? 'pathUSD' : '')
+  const available = balanceOf(token)
+  const availableText = available === null ? '—' : formatUnits(available)
 
   return (
     <section className="card send-card">
-      <h2>Send pathUSD</h2>
+      <h2>Send</h2>
       <p className="muted small">
-        Signed by your passkey in a Tempo Transaction (type <code>0x76</code>).
-        Fees are charged in pathUSD.
+        Send any TIP-20 token, signed by your passkey in a Tempo Transaction
+        (type <code>0x76</code>). You choose which token pays the fee.
       </p>
 
-      <label className="lbl" htmlFor="to">
-        Recipient
-      </label>
+      <label className="lbl" htmlFor="token">Token</label>
+      <input
+        id="token"
+        className="field mono"
+        list="send-token-options"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder={PATHUSD}
+        spellCheck={false}
+        disabled={busy}
+      />
+      <datalist id="send-token-options">
+        {suggestions.map((s) => (
+          <option key={s.value} value={s.value} label={s.label} />
+        ))}
+      </datalist>
+      {tokenMeta && (
+        <span className="muted small token-hint">
+          {tokenMeta.name} ({tokenMeta.symbol}) · {tokenMeta.currency} ·{' '}
+          {tokenMeta.decimals} decimals
+        </span>
+      )}
+
+      <label className="lbl" htmlFor="fee-token">Fee token</label>
+      <input
+        id="fee-token"
+        className="field mono"
+        list="send-token-options"
+        value={feeToken}
+        onChange={(e) => setFeeToken(e.target.value)}
+        placeholder={PATHUSD}
+        spellCheck={false}
+        disabled={busy}
+      />
+      {feeToken.toLowerCase() !== PATHUSD.toLowerCase() && (
+        <span className="muted small token-hint">
+          Non-pathUSD fees require the FeeAMM pool ({shortAddress(feeToken)} → pathUSD)
+          to have pathUSD liquidity.
+        </span>
+      )}
+
+      <label className="lbl" htmlFor="to">Recipient</label>
       <input
         id="to"
         className="field mono"
@@ -164,9 +297,7 @@ export function SendPanel({
 
       <div className="amount-row">
         <div className="amount-col">
-          <label className="lbl" htmlFor="amount">
-            Amount
-          </label>
+          <label className="lbl" htmlFor="amount">Amount</label>
           <input
             id="amount"
             className="field mono"
@@ -178,12 +309,15 @@ export function SendPanel({
           />
         </div>
         <div className="amount-meta">
-          <span className="muted small">Available: {max}</span>
+          <span className="muted small">
+            Available: {availableText}
+            {sym ? ` ${sym}` : ''}
+          </span>
           <button
             className="btn ghost tiny"
             onClick={handleMax}
-            disabled={balance === null || fee === null || busy}
-            title={fee ? 'Fills in the max amount, keeping pathUSD aside for the fee' : 'Enter a recipient first'}
+            disabled={fee === null || busy}
+            title={fee ? 'Fills in the max sendable amount' : 'Enter a token and recipient first'}
           >
             Max
           </button>
@@ -196,18 +330,19 @@ export function SendPanel({
         ) : fee ? (
           <>
             <span className="muted small">
-              Estimated fee: <strong className="fee-amt">{formatUnits(fee.fee)} pathUSD</strong>
-              {balance !== null && balance <= fee.fee && (
-                <span className="fee-warn"> — balance can't cover fees yet</span>
+              Estimated fee: <strong className="fee-amt">{formatUnits(fee.fee)}</strong>{' '}
+              {feeToken.toLowerCase() === PATHUSD.toLowerCase() ? 'pathUSD' : 'fee token'}
+              {feeTokenBalance !== null && feeTokenBalance <= fee.fee && (
+                <span className="fee-warn"> — fee-token balance can't cover fees</span>
               )}
             </span>
             <span className="muted small fee-detail">
-              gas {fee.gasLimit.toString()} · cap {formatUnits(fee.maxFeePerGas * fee.gasLimit / 10n ** 12n, 6)} pathUSD
+              gas {fee.gasLimit.toString()} · cap {formatUnits((fee.maxFeePerGas * fee.gasLimit) / 10n ** 12n)}
             </span>
           </>
         ) : (
           <span className="muted small">
-            {isAddress(to) ? 'Fee estimate unavailable' : 'Enter a recipient to estimate the fee'}
+            {isAddress(token) && isAddress(to) ? 'Fee estimate unavailable' : 'Enter a token and recipient to estimate the fee'}
           </span>
         )}
       </div>
