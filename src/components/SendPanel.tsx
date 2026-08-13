@@ -28,7 +28,7 @@ export function SendPanel({
   onSent: () => void
 }) {
   const [token, setToken] = useState(PATHUSD)
-  const [feeToken, setFeeToken] = useState(PATHUSD)
+  const [feeToken, setFeeToken] = useState('')
   const [tokenBalance, setTokenBalance] = useState<bigint | null>(null)
   const [tokenMeta, setTokenMeta] = useState<TokenMeta | null>(null)
   const [feeTokenBalance, setFeeTokenBalance] = useState<bigint | null>(null)
@@ -39,6 +39,10 @@ export function SendPanel({
   const [error, setError] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // The fee token is optional in the Tempo tx format (type 0x76): an empty
+  // field falls back to the chain's default fee token, pathUSD.
+  const feeTokenAddr = feeToken.trim() === '' ? PATHUSD : feeToken
 
   const suggestions = [
     { value: PATHUSD, label: 'pathUSD' },
@@ -85,31 +89,31 @@ export function SendPanel({
 
   // Load the fee token's balance (the fee is charged in this token).
   useEffect(() => {
-    if (feeToken.toLowerCase() === PATHUSD.toLowerCase()) {
+    if (feeTokenAddr.toLowerCase() === PATHUSD.toLowerCase()) {
       setFeeTokenBalance(pathUsdBalance)
       return
     }
     let alive = true
     setFeeTokenBalance(null)
-    if (isAddress(feeToken)) {
-      getTokenBalance(feeToken, address).then((b) => {
+    if (isAddress(feeTokenAddr)) {
+      getTokenBalance(feeTokenAddr, address).then((b) => {
         if (alive) setFeeTokenBalance(b)
       })
     }
     return () => {
       alive = false
     }
-  }, [feeToken, pathUsdBalance, address])
+  }, [feeTokenAddr, pathUsdBalance, address])
 
   const busy = phase === 'signing' || phase === 'broadcasting' || phase === 'submitted'
 
-  const sameToken = token.toLowerCase() === feeToken.toLowerCase()
+  const sameToken = token.toLowerCase() === feeTokenAddr.toLowerCase()
 
   function balanceOf(addr: string): bigint | null {
     const a = addr.toLowerCase()
     if (a === PATHUSD.toLowerCase()) return pathUsdBalance
     if (a === token.toLowerCase()) return tokenBalance
-    if (a === feeToken.toLowerCase()) return feeTokenBalance
+    if (a === feeTokenAddr.toLowerCase()) return feeTokenBalance
     return null
   }
 
@@ -139,8 +143,8 @@ export function SendPanel({
       setError('Enter a valid token address (0x…).')
       return
     }
-    if (!isAddress(feeToken)) {
-      setError('Enter a valid fee-token address (0x…).')
+    if (!isAddress(feeTokenAddr)) {
+      setError('Enter a valid fee-token address (0x…) or leave it empty to pay in pathUSD.')
       return
     }
     if (!isAddress(to)) {
@@ -165,7 +169,7 @@ export function SendPanel({
 
     const sym = tokenMeta?.symbol ?? 'token'
     const tokenBal = balanceOf(token)
-    const feeBal = balanceOf(feeToken)
+    const feeBal = balanceOf(feeTokenAddr)
     if (tokenBal === null) {
       setError('Balance is still loading — try again in a second.')
       return
@@ -199,7 +203,7 @@ export function SendPanel({
         to,
         value,
         fee,
-        feeToken,
+        feeTokenAddr,
         () => setPhase('submitted'),
       )
       setTxHash(result.hash)
@@ -240,7 +244,8 @@ export function SendPanel({
       <h2>Send</h2>
       <p className="muted small">
         Send any TIP-20 token, signed by your passkey in a Tempo Transaction
-        (type <code>0x76</code>). You choose which token pays the fee.
+        (type <code>0x76</code>). Fees default to pathUSD — optionally choose
+        another token.
       </p>
 
       <label className="lbl" htmlFor="token">Token</label>
@@ -266,20 +271,20 @@ export function SendPanel({
         </span>
       )}
 
-      <label className="lbl" htmlFor="fee-token">Fee token</label>
+      <label className="lbl" htmlFor="fee-token">Fee token (optional)</label>
       <input
         id="fee-token"
         className="field mono"
         list="send-token-options"
         value={feeToken}
         onChange={(e) => setFeeToken(e.target.value)}
-        placeholder={PATHUSD}
+        placeholder="pathUSD (default)"
         spellCheck={false}
         disabled={busy}
       />
-      {feeToken.toLowerCase() !== PATHUSD.toLowerCase() && (
+      {feeTokenAddr.toLowerCase() !== PATHUSD.toLowerCase() && (
         <span className="muted small token-hint">
-          Non-pathUSD fees require the FeeAMM pool ({shortAddress(feeToken)} → pathUSD)
+          Non-pathUSD fees require the FeeAMM pool ({shortAddress(feeTokenAddr)} → pathUSD)
           to have pathUSD liquidity.
         </span>
       )}
@@ -331,7 +336,7 @@ export function SendPanel({
           <>
             <span className="muted small">
               Estimated fee: <strong className="fee-amt">{formatUnits(fee.fee)}</strong>{' '}
-              {feeToken.toLowerCase() === PATHUSD.toLowerCase() ? 'pathUSD' : 'fee token'}
+              {feeTokenAddr.toLowerCase() === PATHUSD.toLowerCase() ? 'pathUSD' : 'fee token'}
               {feeTokenBalance !== null && feeTokenBalance <= fee.fee && (
                 <span className="fee-warn"> — fee-token balance can't cover fees</span>
               )}

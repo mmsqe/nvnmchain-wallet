@@ -1,6 +1,6 @@
 import { encodeFunctionData } from 'viem'
 import { Abis, Addresses } from 'viem/tempo'
-import { publicClient, sendContractCall } from './client'
+import { publicClient, sendContractCall, MULTICALL3 } from './client'
 import { PATHUSD } from '../chain'
 import type { StoredCredential } from './keystore'
 
@@ -27,6 +27,7 @@ export function randomSalt(): `0x${string}` {
 export async function getTokenMeta(token: string): Promise<TokenMeta | null> {
   try {
     const [name, symbol, currency, decimals] = await publicClient.multicall({
+      multicallAddress: MULTICALL3,
       allowFailure: false,
       contracts: [
         { address: token as `0x${string}`, abi: Abis.tip20, functionName: 'name' },

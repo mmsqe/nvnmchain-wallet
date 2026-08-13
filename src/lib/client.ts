@@ -28,6 +28,41 @@ export function walletClientFor(credential: StoredCredential) {
   })
 }
 
+/** Standard Multicall3 — deployed on NVNM chain (Tempo's chain config omits it). */
+export const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11'
+
+/** Minimal TIP-20 view ABI (avoids `Abis.tip20`'s deep tuple types in multicall). */
+const tip20MetaAbi = [
+  {
+    type: 'function',
+    name: 'name',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'string' }],
+  },
+  {
+    type: 'function',
+    name: 'symbol',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'string' }],
+  },
+  {
+    type: 'function',
+    name: 'decimals',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint8' }],
+  },
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ type: 'address', name: 'account' }],
+    outputs: [{ type: 'uint256' }],
+  },
+] as const
+
 const pathUsdAbi = [
   {
     type: 'function',
@@ -362,6 +397,150 @@ function toHex(n: bigint): string {
   return `0x${n.toString(16)}`
 }
 
+// ---------------------------------------------------------------------------
+// Token holdings (non-pathUSD) via the explorer index; RPC fallback
+// ---------------------------------------------------------------------------
+export type TokenHolding = {
+  token: string
+  name: string
+  symbol: string
+  decimals: number
+  balance: bigint
+}
+
+const HOLDINGS_TOKEN_CAP = 60
+
+/**
+ * Returns the TIP-20 tokens (other than pathUSD) that `address` holds a
+ * non-zero balance of.
+ *
+ * The chain has no on-chain per-address token index, so we use the explorer's
+ * indexed `holdings` (all balances, not just recent ones) to discover
+ * candidates, then read name/symbol/decimals from the chain — the explorer's
+ * indexed metadata can be stale/garbage (NUL-padded rows from an early
+ * decoder bug). If the explorer is unreachable (CORS/network), falls back to
+ * reconstructing candidates from recent incoming Transfer logs.
+ */
+export async function getTokenHoldings(
+  address: string,
+): Promise<TokenHolding[]> {
+  let candidates: { token: string; balance: bigint }[] | null = null
+  try {
+    const url = `${nvnmchain.blockExplorers!.default.url}/address/${address}?format=json&tab=tokens`
+    const res = await fetch(url)
+    if (res.ok) {
+      const data = await res.json()
+      const holdings: any[] = data?.holdings ?? []
+      candidates = holdings
+        .filter(
+          (h) => h.token && h.token.toLowerCase() !== PATHUSD.toLowerCase(),
+        )
+        .map((h) => ({ token: h.token, balance: BigInt(h.balance ?? 0) }))
+        .filter((h) => h.balance > 0n)
+        .slice(0, HOLDINGS_TOKEN_CAP)
+    }
+  } catch {
+    // CORS/network failure → fall through to the RPC reconstruction below.
+  }
+  if (candidates) {
+    return enrichHoldings(candidates)
+  }
+  return getHoldingsFromLogs(address)
+}
+
+/** Reads name/symbol/decimals from the chain (batched) for each candidate. */
+async function enrichHoldings(
+  candidates: { token: string; balance: bigint }[],
+): Promise<TokenHolding[]> {
+  const out: TokenHolding[] = []
+  for (let i = 0; i < candidates.length; i += 25) {
+    const chunk = candidates.slice(i, i + 25)
+    const metas = await Promise.all(chunk.map((c) => readTokenMeta(c.token)))
+    for (let j = 0; j < chunk.length; j++) {
+      out.push({
+        token: chunk[j].token,
+        name: metas[j]?.name || 'Token',
+        symbol: metas[j]?.symbol ?? '',
+        decimals: metas[j]?.decimals ?? 6,
+        balance: chunk[j].balance,
+      })
+    }
+  }
+  return out
+}
+
+async function readTokenMeta(token: string): Promise<{
+  name: string
+  symbol: string
+  decimals: number
+} | null> {
+  try {
+    const [name, symbol, decimals] = await publicClient.multicall({
+      multicallAddress: MULTICALL3,
+      contracts: [
+        { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'name' },
+        { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'symbol' },
+        { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'decimals' },
+      ],
+    })
+    const clean = (v: unknown) =>
+      String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim()
+    return {
+      name: clean(name.result),
+      symbol: clean(symbol.result),
+      decimals: Number(decimals.result ?? 6) || 6,
+    }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * RPC fallback: discover candidate tokens from recent incoming Transfer logs
+ * (~13.7h window, same as the history fallback) and verify non-zero balances.
+ */
+async function getHoldingsFromLogs(address: string): Promise<TokenHolding[]> {
+  try {
+    const latestNum = await publicClient.getBlockNumber()
+    const fromBlock =
+      latestNum > HISTORY_WINDOW_BLOCKS ? latestNum - HISTORY_WINDOW_BLOCKS : 0n
+    const addrTopic = `0x${address.toLowerCase().slice(2).padStart(64, '0')}`
+    const inLogs = await rpcGetLogs({
+      fromBlock: toHex(fromBlock),
+      toBlock: 'latest',
+      topics: [TRANSFER_TOPIC, null, addrTopic],
+    })
+    const tokens = new Set<string>()
+    for (const log of inLogs) {
+      const t = String(log.address ?? '').toLowerCase()
+      if (t && t !== PATHUSD.toLowerCase()) tokens.add(t)
+    }
+    const list = [...tokens].slice(0, HOLDINGS_TOKEN_CAP)
+    if (list.length === 0) return []
+    const balances = await publicClient.multicall({
+      multicallAddress: MULTICALL3,
+      contracts: list.map((t) => ({
+        address: t as `0x${string}`,
+        abi: pathUsdAbi,
+        functionName: 'balanceOf',
+        args: [address as `0x${string}`],
+      })),
+    })
+    const held = list
+      .map((t, i) => ({
+        token: t,
+        balance:
+          balances[i]?.status === 'success'
+            ? (balances[i].result as bigint)
+            : 0n,
+      }))
+      .filter((h) => h.balance > 0n)
+    return enrichHoldings(held)
+  } catch {
+    return []
+  }
+}
+
 function topicToAddress(topic: string | undefined): string {
   if (!topic || topic.length < 40) return ''
   return `0x${topic.slice(-40)}`
@@ -454,6 +633,7 @@ export async function getKeyInfo(
 } | null> {
   try {
     const [info, isAdmin] = await publicClient.multicall({
+      multicallAddress: MULTICALL3,
       contracts: [
         {
           address: ACCOUNT_KEYCHAIN,

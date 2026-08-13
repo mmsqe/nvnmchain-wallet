@@ -3,9 +3,10 @@ import type { StoredCredential } from '../lib/keystore'
 import type { WalletAccount } from '../lib/passkey'
 import { deriveAddress } from '../lib/passkey'
 import { getPathUsdBalance, getHistory, tryFaucet, type HistoryResult } from '../lib/client'
-import { formatUnits, shortAddress, explorerAddressUrl, explorerTxUrl, PATHUSD } from '../chain'
+import { shortAddress, explorerAddressUrl } from '../chain'
 import { SendPanel } from './SendPanel'
 import { ActivityList } from './ActivityList'
+import { TokenHoldings } from './TokenHoldings'
 import { LaunchPanel } from './LaunchPanel'
 import { SwapPanel } from './SwapPanel'
 import { PoolPanel } from './PoolPanel'
@@ -128,18 +129,6 @@ export function Dashboard({
             </div>
           </div>
           <code className="address">{address}</code>
-          <div className="balance-row">
-            <div className="balance">
-              <span className="eyebrow">Balance · pathUSD</span>
-              <div className="balance-amount">
-                {balance === null ? '—' : formatUnits(balance)}
-                <span className="balance-symbol"> pathUSD</span>
-              </div>
-            </div>
-            <div className="balance-note">
-              No native gas token — fees are paid in pathUSD.
-            </div>
-          </div>
           <div className="faucet-row">
             <button className="btn ghost small" onClick={handleFaucet}>
               Request funds
@@ -147,6 +136,12 @@ export function Dashboard({
             {faucetMsg && <span className="muted small">{faucetMsg}</span>}
           </div>
         </section>
+
+        <TokenHoldings
+          address={address}
+          pathUsdBalance={balance}
+          refreshKey={refreshKey}
+        />
 
         <SendPanel
           credential={credential}
