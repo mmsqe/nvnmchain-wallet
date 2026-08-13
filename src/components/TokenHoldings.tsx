@@ -45,7 +45,7 @@ export function TokenHoldings({
                 <span className="badge">fee token</span>
               </span>
               <span className="muted small">
-                No native gas token — fees are paid in pathUSD.
+                No native gas token — fees are paid in pathUSD by default.
               </span>
             </div>
             <div className="asset-side">

@@ -24,9 +24,18 @@ Reminders for anyone (human or agent) working in this repo. Read this first.
 
 - **No native gas token.** `eth_getBalance` returns the Tempo placeholder
   (`4.242424242424242e75`) — always read balances via TIP-20 `balanceOf`.
-- Fees are paid in **pathUSD**, charged by the Fee Manager; gas is measured with
-  `tempo_simulateV1` (works pre-funding) and the fee reserve is
-  `gasLimit × maxFeePerGas / 1e12` (pathUSD has 6 decimals, gas price is wei).
+- **Fee token preferences** (Tempo fee spec, `spec-fee#fee-token-preferences`):
+  the node resolves the fee token for a tx in this order — 1) transaction-level
+  `fee_token` field, 2) account preference (FeeManager `userTokens(addr)`, set
+  via `setUserToken`), 3) the TIP-20 being called if it's `transfer` /
+  `transferWithMemo` / `startReward` and its `currency` is USD, 4) StablecoinDex
+  `tokenIn` for swaps, 5) pathUSD fallback. At the chosen level the token must be
+  USD-currency, the payer must have balance, and the FeeAMM must have liquidity
+  (fee token ↔ validator token) — else the tx is invalid.
+- Gas is measured with `tempo_simulateV1` (works pre-funding); the fee reserve is
+  `gasLimit × maxFeePerGas / 1e12` (6-decimal USD tokens, gas price in wei).
+  `tempo_simulateV1`/`eth_estimateGas` do **not** enforce fee-token balance —
+  that only happens at execution (`InsufficientFeeTokenBalance`).
 - Key precompiles (from `viem/tempo` Addresses):
   - AccountKeychain `0xaAAAaaAA…0000`, NonceManager `0x4e4F4E4345…`,
     FeeManager `0xfeec…0000` (hosts the FeeAMM), pathUSD `0x20c0…0000`,
@@ -112,9 +121,14 @@ at **fixed, pre-defined rates**, not from reserves.
 - Stack: `viem` + `viem/tempo`/`ox/tempo` (Tempo tx `0x76`, WebAuthn P-256,
   TIP-20), React 19 + Vite, GH Pages deploy (`GH_PAGES=1 npm run build`).
 - `src/chain.ts` — chain config, URLs, formatting helpers (single source of truth).
-- `src/lib/client.ts` — `publicClient` (no account), `walletClientFor(credential)`
-  (passkey account via `Account.fromWebAuthnP256`, `chain.extend({ feeToken: PATHUSD })`),
-  plus `estimateCallFee`/`sendContractCall` (generic contract calls via `tempo_simulateV1`).
+- `src/lib/client.ts` — `publicClient` (no account), `walletClientFor(credential,
+  feeToken?)` (passkey account via `Account.fromWebAuthnP256`; the chain is only
+  extended with `feeToken` when one is passed — no extension = the envelope omits
+  `feeToken` and the node picks per the preference rules above),
+  plus `estimateCallFee`/`sendContractCall` (generic contract calls via
+  `tempo_simulateV1`), `getTokenHoldings`, and `getEffectiveFeeToken` (reads
+  `FeeManager.userTokens` + token `currency` via eth_call to predict the fee
+  token when omitted — do NOT reimplement the whole rule chain).
 - `src/lib/tip20.ts` — TIP-20 create/mint/metadata + `ISSUER_ROLE` grant.
 - `src/lib/feeamm.ts` — FeeAMM reads/writes (`poolIdOf` is **order-dependent**,
   matching the chain's `getPoolId`), `quoteRebalance`, mint/burn/rebalanceSwap.
@@ -125,7 +139,9 @@ at **fixed, pre-defined rates**, not from reserves.
   `PoolPanel` (single-sided liquidity), `MyTokens`/`MyPositions` (persisted
   lists), `SendPanel`, `ActivityList`.
 - `src/lib/passkey.ts` — WebAuthn credential create/get; `src/lib/keystore.ts` — local storage.
-- Fees are paid in pathUSD; every `sendTransaction` sets `feeToken: PATHUSD`.
+- Send: empty fee-token field omits `fee_token` from the tx (node resolves it:
+  the sent token if USD → account preference → pathUSD); `sendContractCall`
+  always passes `feeToken: PATHUSD` explicitly for launch/swap/pool txs.
 - Build/checks: `npm run build` (tsc + vite), `npm run probe` (live broadcast
   pipeline), `npm run e2e` (Playwright virtual authenticator).
 - Passkeys are bound to origin (`rpId`); `localhost` creds ≠ deployed creds.

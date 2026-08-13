@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { isAddress, parseUnits } from 'viem'
 import type { StoredCredential } from '../lib/keystore'
-import { estimateTokenTransferFee, sendToken, type FeeEstimate } from '../lib/client'
+import { estimateTokenTransferFee, sendToken, getEffectiveFeeToken, type EffectiveFeeToken, type FeeEstimate } from '../lib/client'
 import { getTokenBalance, getTokenMeta, type TokenMeta } from '../lib/tip20'
 import { listMyTokens } from '../lib/portfolio'
 import { formatUnits, explorerTxUrl, shortAddress, PATHUSD } from '../chain'
@@ -39,10 +39,10 @@ export function SendPanel({
   const [error, setError] = useState<string | null>(null)
   const [txHash, setTxHash] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  // The fee token is optional in the Tempo tx format (type 0x76): an empty
-  // field falls back to the chain's default fee token, pathUSD.
-  const feeTokenAddr = feeToken.trim() === '' ? PATHUSD : feeToken
+  // The token that will actually pay the fee: a chosen fee token (transaction
+  // level, highest precedence) or, when the field is empty, the token the node
+  // resolves per its preference rules (read from chain state via eth_call).
+  const [effectiveFee, setEffectiveFee] = useState<EffectiveFeeToken | null>(null)
 
   const suggestions = [
     { value: PATHUSD, label: 'pathUSD' },
@@ -87,33 +87,65 @@ export function SendPanel({
     }
   }, [token, to, address])
 
-  // Load the fee token's balance (the fee is charged in this token).
+  // Resolve the effective fee token. A chosen fee token wins; when empty, the
+  // node picks per its preference rules (account preference → sent token if
+  // USD → pathUSD), which we read from chain state via eth_call.
   useEffect(() => {
-    if (feeTokenAddr.toLowerCase() === PATHUSD.toLowerCase()) {
+    let alive = true
+    const chosen = feeToken.trim()
+    if (chosen) {
+      setEffectiveFee({
+        address: chosen,
+        symbol:
+          chosen.toLowerCase() === PATHUSD.toLowerCase()
+            ? 'pathUSD'
+            : chosen.toLowerCase() === token.toLowerCase()
+              ? tokenMeta?.symbol || shortAddress(chosen)
+              : shortAddress(chosen),
+        source: 'tx',
+      })
+      return
+    }
+    if (!isAddress(token)) {
+      setEffectiveFee(null)
+      return
+    }
+    getEffectiveFeeToken(address, token, tokenMeta?.currency).then((e) => {
+      if (alive) setEffectiveFee(e)
+    })
+    return () => {
+      alive = false
+    }
+  }, [feeToken, token, address, tokenMeta])
+
+  // Load the effective fee token's balance (the fee is charged in this token).
+  useEffect(() => {
+    if (!effectiveFee) return
+    const addr = effectiveFee.address
+    if (addr.toLowerCase() === PATHUSD.toLowerCase()) {
       setFeeTokenBalance(pathUsdBalance)
       return
     }
     let alive = true
     setFeeTokenBalance(null)
-    if (isAddress(feeTokenAddr)) {
-      getTokenBalance(feeTokenAddr, address).then((b) => {
-        if (alive) setFeeTokenBalance(b)
-      })
-    }
+    getTokenBalance(addr, address).then((b) => {
+      if (alive) setFeeTokenBalance(b)
+    })
     return () => {
       alive = false
     }
-  }, [feeTokenAddr, pathUsdBalance, address])
+  }, [effectiveFee, pathUsdBalance, address])
 
   const busy = phase === 'signing' || phase === 'broadcasting' || phase === 'submitted'
 
-  const sameToken = token.toLowerCase() === feeTokenAddr.toLowerCase()
+  const sameToken =
+    !!effectiveFee && token.toLowerCase() === effectiveFee.address.toLowerCase()
 
   function balanceOf(addr: string): bigint | null {
     const a = addr.toLowerCase()
     if (a === PATHUSD.toLowerCase()) return pathUsdBalance
     if (a === token.toLowerCase()) return tokenBalance
-    if (a === feeTokenAddr.toLowerCase()) return feeTokenBalance
+    if (effectiveFee && a === effectiveFee.address.toLowerCase()) return feeTokenBalance
     return null
   }
 
@@ -143,8 +175,12 @@ export function SendPanel({
       setError('Enter a valid token address (0x…).')
       return
     }
-    if (!isAddress(feeTokenAddr)) {
-      setError('Enter a valid fee-token address (0x…) or leave it empty to pay in pathUSD.')
+    if (feeToken.trim() !== '' && !isAddress(feeToken)) {
+      setError('Enter a valid fee-token address (0x…) or leave it empty to let the network pick the fee token.')
+      return
+    }
+    if (!effectiveFee || !isAddress(effectiveFee.address)) {
+      setError('Fee token is still resolving — try again in a second.')
       return
     }
     if (!isAddress(to)) {
@@ -169,7 +205,7 @@ export function SendPanel({
 
     const sym = tokenMeta?.symbol ?? 'token'
     const tokenBal = balanceOf(token)
-    const feeBal = balanceOf(feeTokenAddr)
+    const feeBal = balanceOf(effectiveFee.address)
     if (tokenBal === null) {
       setError('Balance is still loading — try again in a second.')
       return
@@ -184,7 +220,7 @@ export function SendPanel({
     }
     if (fee.fee > feeBal) {
       setError(
-        `Insufficient fee-token balance — you need ${formatUnits(fee.fee)} of the fee token to cover the fee.`,
+        `Insufficient ${effectiveFee.symbol} balance — you need ${formatUnits(fee.fee)} ${effectiveFee.symbol} to cover the fee.`,
       )
       return
     }
@@ -203,7 +239,7 @@ export function SendPanel({
         to,
         value,
         fee,
-        feeTokenAddr,
+        effectiveFee.source === 'tx' ? effectiveFee.address : '',
         () => setPhase('submitted'),
       )
       setTxHash(result.hash)
@@ -217,7 +253,8 @@ export function SendPanel({
     } catch (e: any) {
       const msg = e?.shortMessage ?? e?.message ?? String(e)
       const details = e?.details ?? e?.cause?.details ?? ''
-      if (/insufficient funds/i.test(details)) {
+      if (/insufficient funds|insufficient fee token/i.test(details)) {
+        setError('Insufficient fee token to cover the fee. Top up, then try again.')
         setError('Insufficient fee token to cover the fee. Top up, then try again.')
       } else if (/insufficient liquidity/i.test(details)) {
         setError(
@@ -244,8 +281,8 @@ export function SendPanel({
       <h2>Send</h2>
       <p className="muted small">
         Send any TIP-20 token, signed by your passkey in a Tempo Transaction
-        (type <code>0x76</code>). Fees default to pathUSD — optionally choose
-        another token.
+        (type <code>0x76</code>). Leave the fee token empty to pay in the
+        token you're sending (if USD) or pathUSD — or pick one explicitly.
       </p>
 
       <label className="lbl" htmlFor="token">Token</label>
@@ -278,16 +315,34 @@ export function SendPanel({
         list="send-token-options"
         value={feeToken}
         onChange={(e) => setFeeToken(e.target.value)}
-        placeholder="pathUSD (default)"
+        placeholder="auto — sent token / pathUSD"
         spellCheck={false}
         disabled={busy}
       />
-      {feeTokenAddr.toLowerCase() !== PATHUSD.toLowerCase() && (
+      {feeToken.trim() === '' && effectiveFee && (
         <span className="muted small token-hint">
-          Non-pathUSD fees require the FeeAMM pool ({shortAddress(feeTokenAddr)} → pathUSD)
-          to have pathUSD liquidity.
+          {effectiveFee.source === 'contract' && (
+            <>Fees are charged in <strong>{effectiveFee.symbol}</strong> — the token you're sending (USD). </>
+          )}
+          {effectiveFee.source === 'account' && (
+            <>Fees are charged in <strong>{effectiveFee.symbol}</strong> — your FeeManager preference. </>
+          )}
+          {effectiveFee.source === 'pathusd' && (
+            <>Fees are charged in <strong>pathUSD</strong> (the sent token isn't USD). </>
+          )}
+          {effectiveFee.address.toLowerCase() !== PATHUSD.toLowerCase() && (
+            <>Requires FeeAMM liquidity ({shortAddress(effectiveFee.address)} → pathUSD).</>
+          )}
         </span>
       )}
+      {feeToken.trim() !== '' &&
+        effectiveFee &&
+        effectiveFee.address.toLowerCase() !== PATHUSD.toLowerCase() && (
+          <span className="muted small token-hint">
+            Non-pathUSD fees require the FeeAMM pool ({shortAddress(effectiveFee.address)} → pathUSD)
+            to have pathUSD liquidity.
+          </span>
+        )}
 
       <label className="lbl" htmlFor="to">Recipient</label>
       <input
@@ -336,9 +391,9 @@ export function SendPanel({
           <>
             <span className="muted small">
               Estimated fee: <strong className="fee-amt">{formatUnits(fee.fee)}</strong>{' '}
-              {feeTokenAddr.toLowerCase() === PATHUSD.toLowerCase() ? 'pathUSD' : 'fee token'}
+              {effectiveFee?.symbol ?? 'fee token'}
               {feeTokenBalance !== null && feeTokenBalance <= fee.fee && (
-                <span className="fee-warn"> — fee-token balance can't cover fees</span>
+                <span className="fee-warn"> — {effectiveFee?.symbol ?? 'fee token'} balance can't cover fees</span>
               )}
             </span>
             <span className="muted small fee-detail">

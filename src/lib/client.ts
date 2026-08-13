@@ -1,6 +1,6 @@
 import { http } from 'viem'
 import { createClient, Account, Addresses } from 'viem/tempo'
-import { nvnmchain, PATHUSD, RPC_URL } from '../chain'
+import { nvnmchain, PATHUSD, RPC_URL, shortAddress } from '../chain'
 import type { StoredCredential } from './keystore'
 
 /**
@@ -13,17 +13,23 @@ export const publicClient = createClient({
 
 /**
  * Wallet client bound to a passkey-backed WebAuthn account.
- * Transactions sent through this client are serialized as Tempo
- * Transactions (EIP-2718 type 0x76) signed with the passkey.
+ *
+ * `feeToken` is optional: when omitted the chain has no default fee token, so
+ * the envelope carries none and the node resolves the fee token at execution
+ * per the Tempo fee-spec preference rules (account preference → the TIP-20
+ * being transferred if USD → pathUSD). Pass a fee token to commit to it at
+ * the transaction level (highest precedence).
  */
-export function walletClientFor(credential: StoredCredential) {
+export function walletClientFor(credential: StoredCredential, feeToken?: string) {
   const account = Account.fromWebAuthnP256({
     id: credential.id,
     publicKey: credential.publicKey as `0x${string}`,
   })
   return createClient({
     account,
-    chain: nvnmchain.extend({ feeToken: PATHUSD }),
+    chain: feeToken
+      ? nvnmchain.extend({ feeToken: feeToken as `0x${string}` })
+      : nvnmchain,
     transport: http(nvnmchain.rpcUrls.default.http[0]),
   })
 }
@@ -53,6 +59,13 @@ const tip20MetaAbi = [
     stateMutability: 'view',
     inputs: [],
     outputs: [{ type: 'uint8' }],
+  },
+  {
+    type: 'function',
+    name: 'currency',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'string' }],
   },
   {
     type: 'function',
@@ -226,7 +239,13 @@ export async function sendContractCall(
 
 /**
  * Sends a TIP-20 `transfer` of `amount` on `token` in a Tempo Transaction
- * signed by the passkey. Fees are paid in pathUSD (the chain's fee token).
+ * signed by the passkey.
+ *
+ * When `feeToken` is empty the tx omits the `fee_token` field entirely, so the
+ * node resolves the fee token at execution per its preference rules (for a
+ * transfer: the sent token if its currency is USD, otherwise the account's
+ * FeeManager preference, otherwise pathUSD). When given, it commits to that
+ * token at the transaction level (highest precedence).
  *
  * @returns hash plus final on-chain status: 'ok' | 'reverted' | 'timeout'
  */
@@ -236,15 +255,16 @@ export async function sendToken(
   to: string,
   amount: bigint,
   fee: FeeEstimate,
-  feeToken: string = PATHUSD,
+  feeToken?: string | null,
   onSubmitted?: (hash: string) => void,
 ): Promise<{ hash: string; status: 'ok' | 'reverted' | 'timeout' }> {
-  const client = walletClientFor(credential)
+  const omitFeeToken = !feeToken || feeToken.trim() === ''
+  const client = walletClientFor(credential, omitFeeToken ? undefined : feeToken)
   const hash = await client.sendTransaction({
     to: token as `0x${string}`,
     data: encodeTransfer(to, amount),
     value: 0n,
-    feeToken: feeToken as `0x${string}`,
+    ...(omitFeeToken ? {} : { feeToken: feeToken as `0x${string}` }),
     gas: fee.gasLimit,
     maxFeePerGas: fee.maxFeePerGas,
     maxPriorityFeePerGas: fee.maxPriorityFeePerGas,
@@ -269,6 +289,87 @@ export function encodeTransfer(to: string, amount: bigint): `0x${string}` {
   const toPart = to.slice(2).toLowerCase().padStart(64, '0')
   const amountPart = amount.toString(16).padStart(64, '0')
   return `0x${fn}${toPart}${amountPart}`
+}
+
+// ---------------------------------------------------------------------------
+// Fee-token resolution (Tempo fee-spec preference rules)
+// ---------------------------------------------------------------------------
+
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+const feeManagerUserTokensAbi = [
+  {
+    type: 'function',
+    name: 'userTokens',
+    stateMutability: 'view',
+    inputs: [{ type: 'address', name: 'user' }],
+    outputs: [{ type: 'address' }],
+  },
+] as const
+
+/**
+ * Reads the account's FeeManager fee-token preference (`setUserToken`), if any.
+ * Per the Tempo fee spec this is the second-highest precedence, after the
+ * transaction-level `fee_token` field.
+ */
+export async function getUserFeeTokenPreference(
+  from: string,
+): Promise<string | null> {
+  try {
+    const token = await publicClient.readContract({
+      address: Addresses.feeManager,
+      abi: feeManagerUserTokensAbi,
+      functionName: 'userTokens',
+      args: [from as `0x${string}`],
+    })
+    const t = token as string
+    return t && t.toLowerCase() !== ZERO_ADDRESS.toLowerCase() ? t : null
+  } catch {
+    return null
+  }
+}
+
+export type EffectiveFeeToken = {
+  address: string
+  symbol: string
+  source: 'tx' | 'account' | 'contract' | 'pathusd'
+}
+
+/**
+ * Determines which token the node will charge when a transaction omits the
+ * `fee_token` field, per the Tempo fee-spec preference rules (spec-fee
+ * #fee-token-preferences): account preference (FeeManager `userTokens`) → the
+ * TIP-20 being transferred (`transfer`/`transferWithMemo`/`startReward`, must
+ * be USD currency) → pathUSD. Each level is read directly from chain state
+ * via eth_call rather than reimplementing the rule; the StablecoinDEX level
+ * does not apply to transfers.
+ */
+export async function getEffectiveFeeToken(
+  from: string,
+  transferToken: string,
+  transferCurrency: string | null | undefined,
+): Promise<EffectiveFeeToken> {
+  const accountPref = await getUserFeeTokenPreference(from)
+  if (accountPref) {
+    const meta = await readTokenMeta(accountPref)
+    return {
+      address: accountPref,
+      symbol: meta?.symbol || shortAddress(accountPref),
+      source: 'account',
+    }
+  }
+  const currency = (
+    transferCurrency ?? (await readTokenMeta(transferToken))?.currency ?? ''
+  ).toUpperCase()
+  if (currency === 'USD') {
+    const meta = await readTokenMeta(transferToken)
+    return {
+      address: transferToken,
+      symbol: meta?.symbol || 'fee token',
+      source: 'contract',
+    }
+  }
+  return { address: PATHUSD, symbol: 'pathUSD', source: 'pathusd' }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,14 +574,16 @@ async function readTokenMeta(token: string): Promise<{
   name: string
   symbol: string
   decimals: number
+  currency: string
 } | null> {
   try {
-    const [name, symbol, decimals] = await publicClient.multicall({
+    const [name, symbol, decimals, currency] = await publicClient.multicall({
       multicallAddress: MULTICALL3,
       contracts: [
         { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'name' },
         { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'symbol' },
         { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'decimals' },
+        { address: token as `0x${string}`, abi: tip20MetaAbi, functionName: 'currency' },
       ],
     })
     const clean = (v: unknown) =>
@@ -489,6 +592,7 @@ async function readTokenMeta(token: string): Promise<{
       name: clean(name.result),
       symbol: clean(symbol.result),
       decimals: Number(decimals.result ?? 6) || 6,
+      currency: clean(currency.result),
     }
   } catch {
     return null
