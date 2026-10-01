@@ -14,8 +14,9 @@ import {
   type Pool,
 } from '../lib/feeamm'
 import { getTokenBalance, getTokenMeta, type TokenMeta } from '../lib/tip20'
-import { formatUnits, explorerTxUrl, shortAddress, PATHUSD } from '../chain'
+import { formatUnits, explorerTxUrl, shortAddress, PATHUSD, feeTokenSymbol } from '../chain'
 import { saveMyPosition, listMyTokens } from '../lib/portfolio'
+import { formatTxError } from '../lib/errors'
 
 type Phase = 'idle' | 'adding' | 'removing' | 'submitted'
 
@@ -28,6 +29,7 @@ export function PoolPanel({
 }) {
   const [userToken, setUserToken] = useState('')
   const [validatorToken, setValidatorToken] = useState(PATHUSD)
+  const feeSymbol = feeTokenSymbol()
   const [pool, setPool] = useState<Pool | null>(null)
   const [totalSupply, setTotalSupply] = useState<bigint | null>(null)
   const [lpBalance, setLpBalance] = useState<bigint | null>(null)
@@ -43,7 +45,7 @@ export function PoolPanel({
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const suggestions = [
-    { value: PATHUSD, label: 'pathUSD' },
+    { value: PATHUSD, label: feeTokenSymbol() },
     ...listMyTokens().map((t) => ({
       value: t.token,
       label: t.symbol ?? t.name ?? shortAddress(t.token),
@@ -224,7 +226,7 @@ export function PoolPanel({
       </datalist>
       <p className="muted small">
         To pay fees in your token, set <strong>User token</strong> to it and{' '}
-        <strong>Validator token</strong> to pathUSD, then add pathUSD below.
+        <strong>Validator token</strong> to {feeSymbol}, then add {feeSymbol} below.
       </p>
 
       {pool && (
@@ -323,12 +325,4 @@ function predictBurn(
     amountUser: (liquidity * pool.reserveUserToken) / totalSupply,
     amountValidator: (liquidity * pool.reserveValidatorToken) / totalSupply,
   }
-}
-
-function formatTxError(e: any): string {
-  const msg = e?.shortMessage ?? e?.message ?? String(e)
-  const details = e?.details ?? e?.cause?.details ?? ''
-  if (/user rejected|rejected/i.test(msg)) return 'Passkey prompt was cancelled — nothing was sent.'
-  if (/insufficient funds/i.test(details)) return 'Insufficient pathUSD to cover the fee.'
-  return `${msg}${details ? ` — ${details}` : ''}`
 }

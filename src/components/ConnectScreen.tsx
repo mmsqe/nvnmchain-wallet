@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { registerPasskey, loginPasskey, loginWithDiscoverablePasskey, deriveAddress, normalizeEmail, isValidEmail } from '../lib/passkey'
 import type { WalletAccount } from '../lib/passkey'
 import * as keystore from '../lib/keystore'
-import { CHAIN_ID, shortAddress } from '../chain'
+import { shortAddress } from '../chain'
+import { useNetwork } from '../lib/useNetwork'
+import { NetworkSwitcher } from './NetworkSwitcher'
 
 export function ConnectScreen({
   onCreated,
@@ -13,6 +15,7 @@ export function ConnectScreen({
   const [error, setError] = useState<string | null>(null)
   const [email, setEmail] = useState('')
   const [, setRefreshKey] = useState(0)
+  const network = useNetwork()
   const existing = keystore.listCredentials()
 
   async function handleCreate() {
@@ -90,7 +93,7 @@ export function ConnectScreen({
           <span className="brand-mark" />
           <span className="brand-name">NVNM Passkey Wallet</span>
         </div>
-        <span className="network-pill">NVNM Canary · chain {CHAIN_ID}</span>
+        <NetworkSwitcher />
       </header>
 
       <main className="connect">
@@ -233,7 +236,7 @@ export function ConnectScreen({
 
         <p className="footnote">
           WebAuthn · P-256 (secp256r1) · Tempo Transactions (EIP-2718 type{' '}
-          <code>0x76</code>) · fees in pathUSD
+          <code>0x76</code>) · fees in {network.feeTokenSymbol}
         </p>
       </main>
     </div>

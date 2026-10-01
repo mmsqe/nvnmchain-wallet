@@ -4,23 +4,30 @@ Reminders for anyone (human or agent) working in this repo. Read this first.
 
 ## What this chain is
 
-- **NVNM Chain (NVNM Canary) is a fork of [Tempo](https://tempo.xyz)**, not a
+- **NVNM Chain is a fork of [Tempo](https://tempo.xyz)**, not a
   reimplementation and **not** any pre-existing "nvnmchain" you find on Google.
   The protocol/technical side is identical to Tempo: EVM + Tempo Transactions
   (`0x76`), WebAuthn/P-256 signatures, TIP-20 tokens, FeeAMM, stablecoin gas.
   Only the network identity differs (chain ID, RPC, predeployed token addresses
   can differ from Tempo mainnet).
-- It runs on MANTRA canary infrastructure — hence the `*.mantrachain.dev` domains.
+- There are **two networks**: NVNM Canary (MANTRA canary infrastructure — hence
+  the `*.mantrachain.dev` domains) and NVNM Testnet (`*.nvnmchain.io`). Both are
+  selectable in the UI; see `NETWORKS` in `src/chain.ts`.
 
 ## Network facts (do not "fix" these)
 
-| | |
-|---|---|
-| Chain ID | `787222` |
-| RPC | `https://rpc.nvnm.canary.mantrachain.dev` |
-| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` (see "Explorer" below) |
-| Fee token | `pathUSD` = `0x20c0000000000000000000000000000000000000` (TIP-20, **6 decimals**) |
-| Transaction type | Tempo Transaction `0x76` (EIP-2718), WebAuthn/P-256 |
+| | Canary | Testnet |
+|---|---|---|
+| Chain ID | `787222` | `787223` |
+| RPC | `https://rpc.nvnm.canary.mantrachain.dev` | `https://rpc.nvnm.testnet.nvnmchain.io` |
+| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` (see "Explorer" below) | `https://explorer.nvnm.testnet.nvnmchain.io` |
+| Fee token | `pathUSD` = `0x20c0000000000000000000000000000000000000` (TIP-20, **6 decimals**) | `nUSD` at the **same** address (6 decimals, USD) |
+
+- Predeploy addresses are identical across both networks; only the fee token's
+  on-chain metadata (symbol `nvnmUSD` on canary, `nUSD` on testnet) differs. The
+  UI calls it `pathUSD` on canary and `nUSD` on testnet
+  (`NETWORKS[key].feeTokenSymbol` / `feeTokenSymbol()`) — use that helper instead
+  of hardcoding either name in copy.
 
 - **No native gas token.** `eth_getBalance` returns the Tempo placeholder
   (`4.242424242424242e75`) — always read balances via TIP-20 `balanceOf`.
@@ -46,14 +53,17 @@ Reminders for anyone (human or agent) working in this repo. Read this first.
 
 ## Explorer (we switched from Blockscout)
 
-- Use `https://explorer.nvnm.canary.mantrachain.dev/` — a custom Rust/SQLite
-  explorer (repo `yihuang/nvnmchain-explorer`). The old
+- Use `https://explorer.nvnm.canary.mantrachain.dev/` (canary) or
+  `https://explorer.nvnm.testnet.nvnmchain.io/` (testnet) — a custom
+  Rust/SQLite explorer (repo `yihuang/nvnmchain-explorer`), one instance per
+  network, same routes/JSON shape. The old
   `blockscout.nvnm.canary.mantrachain.dev` is **dead (HTTP 525)**.
 - **Every page doubles as JSON**: append `?format=json` (or send
   `Accept: application/json`). Routes: `/address/{addr}`, `/tx/{hash}`,
   `/token/{addr}`, `/block/{id}`, `/blocks`, `/tokens`, `/search`.
 - Transaction history (what `getHistory` uses):
   `{EXPLORER_URL}/address/{addr}?format=json&tab=transactions&page=1`
+  (`EXPLORER_URL` = the active network's explorer — `getNetwork().explorerUrl`)
   → JSON object with a `transactions[]` array. Tx fields: `hash`,
   `from_addr`, `to_addr` (may be null), `status` (**`1`=success, `0`=reverted**),
   `timestamp` (**unix seconds**), `fee_amount`, `fee_token`, `block_number`.
@@ -120,8 +130,17 @@ at **fixed, pre-defined rates**, not from reserves.
 
 - Stack: `viem` + `viem/tempo`/`ox/tempo` (Tempo tx `0x76`, WebAuthn P-256,
   TIP-20), React 19 + Vite, GH Pages deploy (`GH_PAGES=1 npm run build`).
-- `src/chain.ts` — chain config, URLs, formatting helpers (single source of truth).
-- `src/lib/client.ts` — `publicClient` (no account), `walletClientFor(credential,
+- `src/chain.ts` — chain config, URLs, formatting helpers (single source of
+  truth). Hosts the **network registry**: `NETWORKS` (canary / testnet),
+  `getNetwork()`, `setNetwork()`, persisted at `nvnmchain:network:v1`, plus
+  `chainFor(network)` / `feeTokenSymbol()` / `explorerUrl()` helpers.
+- `src/lib/useNetwork.ts` — `useNetwork()` (`useSyncExternalStore`) so React
+  re-renders on a network switch; `NetworkSwitcher` is the header control and
+  `App` keys the screens by `network.key` (a switch remounts them, re-reading
+  every balance / list from the newly selected chain).
+- `src/lib/client.ts` — `publicClient` (no account) is a **lazy proxy** that
+  rebuilds the underlying viem client when the network changes, so the module
+  reference stays valid; `walletClientFor(credential,
   feeToken?)` (passkey account via `Account.fromWebAuthnP256`; the chain is only
   extended with `feeToken` when one is passed — no extension = the envelope omits
   `feeToken` and the node picks per the preference rules above),
@@ -129,27 +148,38 @@ at **fixed, pre-defined rates**, not from reserves.
   `tempo_simulateV1`), `getTokenHoldings`, and `getEffectiveFeeToken` (reads
   `FeeManager.userTokens` + token `currency` via eth_call to predict the fee
   token when omitted — do NOT reimplement the whole rule chain).
+  RPC / explorer URLs always come from `getNetwork()` — never hardcode them.
 - `src/lib/tip20.ts` — TIP-20 create/mint/metadata + `ISSUER_ROLE` grant.
 - `src/lib/feeamm.ts` — FeeAMM reads/writes (`poolIdOf` is **order-dependent**,
   matching the chain's `getPoolId`), `quoteRebalance`, mint/burn/rebalanceSwap.
 - `src/lib/portfolio.ts` — localStorage tracking of "my tokens" and "my
   positions" (the chain has no per-address index; token addresses come from a
   random salt and LP balances are keyed by pool hash). Re-enriched from chain.
+  Keys are **scoped per network** (`…:v1:{network}`); the pre-network-switcher
+  canary entries are migrated on first read.
 - `src/components/` — `LaunchPanel` (create token), `SwapPanel` (rebalance),
   `PoolPanel` (single-sided liquidity), `MyTokens`/`MyPositions` (persisted
   lists), `SendPanel`, `ActivityList`.
 - `src/lib/passkey.ts` — WebAuthn credential create/get; `src/lib/keystore.ts` — local storage.
 - Send: empty fee-token field omits `fee_token` from the tx (node resolves it:
-  the sent token if USD → account preference → pathUSD); `sendContractCall`
-  always passes `feeToken: PATHUSD` explicitly for launch/swap/pool txs.
-- Build/checks: `npm run build` (tsc + vite), `npm run probe` (live broadcast
-  pipeline), `npm run e2e` (Playwright virtual authenticator).
+  the sent token if USD → account preference → the network's fee token);
+  `sendContractCall` always passes `feeToken: PATHUSD` explicitly for
+  launch/swap/pool txs.
+- Build/checks: `npm run build` (tsc + vite), `npm run probe [-- testnet]`
+  (live broadcast pipeline), `npm run e2e` (Playwright virtual authenticator).
 - Passkeys are bound to origin (`rpId`); `localhost` creds ≠ deployed creds.
+  A passkey is **not** network-scoped — the same credential/address exists on
+  canary and testnet (balances differ).
 
 ## Gotchas checklist
 
 - [ ] Read balances via TIP-20 `balanceOf`, never `eth_getBalance`.
-- [ ] pathUSD decimals = **6**, not 18.
+- [ ] The fee token has 6 decimals on both networks (canary `pathUSD`,
+      testnet `nUSD`); the address is the same predeploy `0x20c0…0000`.
+- [ ] Never hardcode a chain ID / RPC / explorer URL or the `pathUSD` label —
+      read them from `getNetwork()` / `feeTokenSymbol()`.
+- [ ] Local asset lists (`portfolio.ts`) are per-network; keep new persistence
+      keys scoped the same way.
 - [ ] FeeAMM pool id is **order-dependent**; two pools per pair.
 - [ ] FeeAMM swaps are **fixed-rate**, not `x·y=k`; no price impact/slippage
       from reserves — only the flat `M`/`N` rates.

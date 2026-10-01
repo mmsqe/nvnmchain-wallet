@@ -1,13 +1,15 @@
 /**
- * Probe script — validates that the NVNM canary chain accepts Tempo type-0x76
+ * Probe script — validates that an NVNM chain accepts Tempo type-0x76
  * transactions signed with a WebAuthn (passkey) signature envelope.
  *
- * There is no public faucet on this canary, so a zero-balance sender is
+ * There is no public faucet on these chains, so a zero-balance sender is
  * rejected with a *fee/balance* error. If the node accepts the transaction
  * format (signature, RLP, nonce, fee token), the error will NOT be about the
  * signature or RLP encoding — proving the wallet's signing pipeline is correct.
  *
- * Run: `npm run probe`
+ * Run against canary (default) or testnet:
+ *   npm run probe            # canary
+ *   npm run probe -- testnet # testnet
  */
 import { createClient, http, defineChain } from 'viem'
 import { tempo } from 'viem/tempo/chains'
@@ -17,10 +19,28 @@ import { createHash } from 'node:crypto'
 
 const sha256 = (input) => createHash('sha256').update(input).digest()
 
-const RPC = 'https://rpc.nvnm.canary.mantrachain.dev'
-const CHAIN_ID = 787222
+// Keep in sync with src/chain.ts (NETWORKS).
+const NETWORKS = {
+  canary: {
+    name: 'NVNM Canary',
+    chainId: 787222,
+    rpc: 'https://rpc.nvnm.canary.mantrachain.dev',
+    explorer: 'https://explorer.nvnm.canary.mantrachain.dev',
+  },
+  testnet: {
+    name: 'NVNM Testnet',
+    chainId: 787223,
+    rpc: 'https://rpc.nvnm.testnet.nvnmchain.io',
+    explorer: 'https://explorer.nvnm.testnet.nvnmchain.io',
+  },
+}
+
+const NET_KEY = process.argv[2] in NETWORKS ? process.argv[2] : 'canary'
+const { name: NET_NAME, chainId: CHAIN_ID, rpc: RPC } = NETWORKS[NET_KEY]
 const PATHUSD = '0x20c0000000000000000000000000000000000000'
 const ORIGIN = 'http://localhost:5173' // must match the wallet's origin
+
+console.log(`--- Network: ${NET_NAME} (chain ${CHAIN_ID}) — ${RPC}`)
 
 // ---------------------------------------------------------------------------
 // 1. Chain definition (same as src/chain.ts)
@@ -28,14 +48,11 @@ const ORIGIN = 'http://localhost:5173' // must match the wallet's origin
 const nvnmchain = defineChain({
   ...tempo, // carries the Tempo chainConfig (serializers, formatters, fee hooks)
   id: CHAIN_ID,
-  name: 'NVNM Canary',
+  name: NET_NAME,
   nativeCurrency: { name: 'USD', symbol: 'USD', decimals: 6 },
   rpcUrls: { default: { http: [RPC] } },
   blockExplorers: {
-    default: {
-      name: 'Blockscout',
-      url: 'https://blockscout.nvnm.canary.mantrachain.dev',
-    },
+    default: { name: 'nvnmchain Explorer', url: NETWORKS[NET_KEY].explorer },
   },
 })
 

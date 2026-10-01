@@ -4,7 +4,11 @@
  * address" (token addresses are deterministic from a random salt, and LP
  * balances are keyed by pool hash), so we track them locally and re-enrich
  * with live on-chain data at render time.
+ *
+ * Entries are scoped per network — the same token address means different
+ * tokens (or nothing at all) on canary vs testnet.
  */
+import { getNetworkKey } from '../chain'
 
 export type MyToken = {
   token: string
@@ -27,9 +31,24 @@ const POSITIONS_KEY = 'nvnmchain:myPositions:v1'
 /** Fired whenever a token or position is added/removed. */
 export const ASSETS_CHANGED = 'nvnmchain:assets-changed'
 
-function read<T>(key: string): T[] {
+/** Per-network storage key. */
+function scopedKey(base: string): string {
+  return `${base}:${getNetworkKey()}`
+}
+
+function read<T>(base: string): T[] {
   try {
-    const raw = localStorage.getItem(key)
+    const key = scopedKey(base)
+    let raw = localStorage.getItem(key)
+    if (raw == null && getNetworkKey() === 'canary') {
+      // one-time migration of entries saved before networks were selectable
+      const legacy = localStorage.getItem(base)
+      if (legacy != null) {
+        localStorage.setItem(key, legacy)
+        localStorage.removeItem(base)
+        raw = legacy
+      }
+    }
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed : []
@@ -38,8 +57,8 @@ function read<T>(key: string): T[] {
   }
 }
 
-function write<T>(key: string, items: T[]): void {
-  localStorage.setItem(key, JSON.stringify(items))
+function write<T>(base: string, items: T[]): void {
+  localStorage.setItem(scopedKey(base), JSON.stringify(items))
 }
 
 function notify(): void {

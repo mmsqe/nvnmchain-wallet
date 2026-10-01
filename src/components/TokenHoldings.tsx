@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import { getTokenHoldings, type TokenHolding } from '../lib/client'
-import { formatUnits, explorerAddressUrl, shortAddress, PATHUSD } from '../chain'
+import { formatUnits, explorerAddressUrl, shortAddress, PATHUSD, feeTokenSymbol } from '../chain'
 
 /**
- * All TIP-20 balances for the current account — pathUSD (the fee token)
- * first, then any other non-zero holdings. Refreshed on an interval and
- * whenever `refreshKey` changes (e.g. after a send).
+ * All TIP-20 balances for the current account — the fee token first, then any
+ * other non-zero holdings. Refreshed on an interval and whenever `refreshKey`
+ * changes (e.g. after a send).
  */
 export function TokenHoldings({
   address,
@@ -17,6 +17,7 @@ export function TokenHoldings({
   refreshKey: number
 }) {
   const [holdings, setHoldings] = useState<TokenHolding[] | null>(null)
+  const feeSymbol = feeTokenSymbol()
 
   useEffect(() => {
     let alive = true
@@ -41,17 +42,17 @@ export function TokenHoldings({
           <div className="asset-row">
             <div className="asset-main">
               <span className="asset-name">
-                pathUSD
+                {feeSymbol}
                 <span className="badge">fee token</span>
               </span>
               <span className="muted small">
-                No native gas token — fees are paid in pathUSD by default.
+                No native gas token — fees are paid in {feeSymbol} by default.
               </span>
             </div>
             <div className="asset-side">
               <span className="muted small">
                 {formatUnits(pathUsdBalance)}
-                <span className="balance-symbol"> pathUSD</span>
+                <span className="balance-symbol"> {feeSymbol}</span>
               </span>
             </div>
           </div>

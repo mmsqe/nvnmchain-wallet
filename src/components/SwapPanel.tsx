@@ -9,6 +9,7 @@ import {
 } from '../lib/feeamm'
 import { getTokenBalance, getTokenMeta, type TokenMeta } from '../lib/tip20'
 import { formatUnits, explorerTxUrl, shortAddress, PATHUSD } from '../chain'
+import { formatTxError } from '../lib/errors'
 
 type Phase = 'idle' | 'signing' | 'submitted'
 
@@ -237,12 +238,4 @@ export function SwapPanel({
       {error && <div className="error">{error}</div>}
     </section>
   )
-}
-
-function formatTxError(e: any): string {
-  const msg = e?.shortMessage ?? e?.message ?? String(e)
-  const details = e?.details ?? e?.cause?.details ?? ''
-  if (/user rejected|rejected/i.test(msg)) return 'Passkey prompt was cancelled — nothing was sent.'
-  if (/insufficient funds/i.test(details)) return 'Insufficient pathUSD to cover the fee.'
-  return `${msg}${details ? ` — ${details}` : ''}`
 }

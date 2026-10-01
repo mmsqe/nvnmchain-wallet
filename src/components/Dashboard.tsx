@@ -4,6 +4,8 @@ import type { WalletAccount } from '../lib/passkey'
 import { deriveAddress } from '../lib/passkey'
 import { getPathUsdBalance, getHistory, tryFaucet, type HistoryResult } from '../lib/client'
 import { shortAddress, explorerAddressUrl } from '../chain'
+import { useNetwork } from '../lib/useNetwork'
+import { NetworkSwitcher } from './NetworkSwitcher'
 import { SendPanel } from './SendPanel'
 import { ActivityList } from './ActivityList'
 import { TokenHoldings } from './TokenHoldings'
@@ -32,6 +34,7 @@ export function Dashboard({
   onDisconnect: () => void
 }) {
   const [address] = useState(() => deriveAddress(credential.publicKey))
+  const network = useNetwork()
   const [balance, setBalance] = useState<bigint | null>(null)
   const [history, setHistory] = useState<HistoryResult>({ items: [], ok: false })
   const [faucetMsg, setFaucetMsg] = useState<string | null>(null)
@@ -50,7 +53,7 @@ export function Dashboard({
     } catch {
       // transient RPC hiccup — keep stale data
     }
-  }, [address])
+  }, [address, network.key])
 
   useEffect(() => {
     refresh()
@@ -64,7 +67,7 @@ export function Dashboard({
     setFaucetMsg(
       res
         ? 'Funds requested — check back in a moment.'
-        : 'The canary faucet is not enabled. Ask the chain operator to fund this address, or send pathUSD from a funded account.',
+        : `The ${network.name} faucet is not enabled. Ask the chain operator to fund this address, or send ${network.feeTokenSymbol} from a funded account.`,
     )
   }
 
@@ -86,7 +89,7 @@ export function Dashboard({
           <span className="brand-name">NVNM Passkey Wallet</span>
         </div>
         <div className="topbar-right">
-          <span className="network-pill">NVNM Canary</span>
+          <NetworkSwitcher compact />
           <button className="btn ghost small" onClick={onDisconnect}>
             Disconnect
           </button>

@@ -1,3 +1,5 @@
+import { feeTokenSymbol } from '../chain'
+
 /** Shared error-to-user-message helper for transaction failures. */
 export function formatTxError(e: any): string {
   const msg = e?.shortMessage ?? e?.message ?? String(e)
@@ -6,7 +8,7 @@ export function formatTxError(e: any): string {
     return 'Passkey prompt was cancelled — nothing was sent.'
   }
   if (/insufficient funds/i.test(details)) {
-    return 'Insufficient pathUSD to cover the fee.'
+    return `Insufficient ${feeTokenSymbol()} to cover the fee.`
   }
   return `${msg}${details ? ` — ${details}` : ''}`
 }

@@ -11,22 +11,32 @@ the same scheme used by [Tempo](https://wallet.tempo.xyz/) and its
 
 ## Network
 
-| | |
-|---|---|
-| Chain ID | `787222` |
-| RPC | `https://rpc.nvnm.canary.mantrachain.dev` |
-| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` |
-| Fee token | `pathUSD` (`0x20c0000000000000000000000000000000000000`) |
-| Transaction type | Tempo Transaction (`0x76`) — WebAuthn/P-256 signatures |
+| | Canary | Testnet |
+|---|---|---|
+| Chain ID | `787222` | `787223` |
+| RPC | `https://rpc.nvnm.canary.mantrachain.dev` | `https://rpc.nvnm.testnet.nvnmchain.io` |
+| Explorer | `https://explorer.nvnm.canary.mantrachain.dev` | `https://explorer.nvnm.testnet.nvnmchain.io` |
+| Fee token | `pathUSD` (`0x20c0…0000`) | `nUSD` (`0x20c0…0000`) |
 
-NVNM Canary is a Tempo fork: it ships the Tempo precompiles
-(AccountKeychain `0xaAAAaaAA…0000`, NonceManager `0x4e4F4E4345…`,
-FeeManager `0xfeec…`, pathUSD `0x20c0…`), has **no native gas token**
-(`eth_getBalance` returns the documented Tempo placeholder), and charges
-fees in `pathUSD` via the Fee Manager.
+Both networks are Tempo forks and share the same predeploy addresses:
+AccountKeychain `0xaAAAaaAA…0000`, NonceManager `0x4e4F4E4345…`, FeeManager
+`0xfeec…`, TIP-20 factory `0x20fc…`, and the fee token at `0x20c0…0000`
+(only its on-chain *symbol* differs — `nvnmUSD` on canary, `nUSD` on testnet;
+the UI keeps the familiar `pathUSD` label on canary). Neither has a native
+gas token (`eth_getBalance` returns the documented Tempo placeholder), and
+both charge fees via the Fee Manager.
+
+Switch networks from the picker in the header — the choice is persisted in
+`localStorage` and every RPC client, explorer link, balance and asset list
+follows it. Passkeys (and therefore addresses) are the same on both chains:
+the address is derived from the P-256 public key, not from chain state.
 
 ## Features
 
+- **Network switch** — pick **NVNM Canary** or **NVNM Testnet** in the
+  header; balances, history, tokens, LP positions and explorer links are
+  re-read from the selected chain (locally tracked assets are scoped per
+  network).
 - **Create wallet** — enter an email (it becomes your account name, stored
   locally; normalized to lowercase + trimmed) and register a passkey
   (resident key, user-verifying). Address is derived on-chain-style as
@@ -77,10 +87,11 @@ npm run dev        # http://localhost:5173
 ### Scripts
 
 ```bash
-npm run probe     # validates the WebAuthn → type-0x76 broadcast pipeline
-                  # against the live chain (expects "insufficient funds")
-npm run e2e       # Playwright + virtual authenticator end-to-end test
-npm run build     # production build
+npm run probe            # validates the WebAuthn → type-0x76 broadcast pipeline
+                         # against the live canary (expects "insufficient funds")
+npm run probe -- testnet # same probe against NVNM Testnet
+npm run e2e              # Playwright + virtual authenticator end-to-end test
+npm run build            # production build
 ```
 
 ## Deploy
@@ -127,9 +138,10 @@ node scripts/gh-pages-check.mjs
    checks the `webauthn.get` client data and challenge, derives the sender,
    and charges fees in `pathUSD`.
 
-This pipeline is verified against the live canary node
-(`scripts/probe.mjs`): the node parses, signature-verifies, and fee-checks
-the transaction, rejecting only for missing funds.
+This pipeline is verified against both live networks (`scripts/probe.mjs`,
+run with no argument for canary and `-- testnet` for testnet): each node
+parses, signature-verifies, and fee-checks the transaction, rejecting only
+for missing funds.
 
 ## Stack
 
@@ -140,11 +152,12 @@ the transaction, rejecting only for missing funds.
 
 ## Notes
 
-- The canary has **no public faucet** — you need `pathUSD` sent to your
-  address to pay fees. Ask the chain operator to fund the derived address.
+- Neither network has a **public faucet** (`tempo_fundAddress` is not
+  exposed) — you need the fee token sent to your address to pay fees. Ask
+  the chain operator to fund the derived address.
 - `eth_getBalance` always returns the Tempo placeholder
   (`4.242424242424242e75`); always read balances from TIP-20
-  `balanceOf(pathUSD, …)` instead.
+  `balanceOf(<fee token>, …)` instead.
 
 ## Cross-device & iCloud Keychain
 

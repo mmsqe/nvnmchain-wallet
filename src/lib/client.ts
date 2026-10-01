@@ -1,14 +1,47 @@
 import { http } from 'viem'
 import { createClient, Account, Addresses } from 'viem/tempo'
-import { nvnmchain, PATHUSD, RPC_URL, shortAddress } from '../chain'
+import {
+  chainFor,
+  getNetwork,
+  getNetworkKey,
+  NETWORKS,
+  PATHUSD,
+  shortAddress,
+  type NetworkKey,
+} from '../chain'
 import type { StoredCredential } from './keystore'
 
 /**
  * Shared Tempo client for public reads (no account).
+ *
+ * Rebuilt lazily when the active network changes, so every caller keeps using
+ * the same `publicClient` reference and transparently follows the switch.
  */
-export const publicClient = createClient({
-  chain: nvnmchain.extend({ feeToken: PATHUSD }),
-  transport: http(nvnmchain.rpcUrls.default.http[0]),
+type PublicClient = ReturnType<typeof makePublicClient>
+
+function makePublicClient(key: NetworkKey) {
+  return createClient({
+    chain: chainFor(key).extend({ feeToken: PATHUSD }),
+    transport: http(NETWORKS[key].rpcUrl),
+  })
+}
+
+let publicCache: { key: NetworkKey; client: PublicClient } | null = null
+
+export function getPublicClient(): PublicClient {
+  const key = getNetworkKey()
+  if (!publicCache || publicCache.key !== key) {
+    publicCache = { key, client: makePublicClient(key) }
+  }
+  return publicCache.client
+}
+
+export const publicClient: PublicClient = new Proxy({} as PublicClient, {
+  get(_target, prop) {
+    const client = getPublicClient() as unknown as Record<string | symbol, unknown>
+    const value = client[prop]
+    return typeof value === 'function' ? value.bind(client) : value
+  },
 })
 
 /**
@@ -25,12 +58,13 @@ export function walletClientFor(credential: StoredCredential, feeToken?: string)
     id: credential.id,
     publicKey: credential.publicKey as `0x${string}`,
   })
+  const chain = chainFor()
   return createClient({
     account,
     chain: feeToken
-      ? nvnmchain.extend({ feeToken: feeToken as `0x${string}` })
-      : nvnmchain,
-    transport: http(nvnmchain.rpcUrls.default.http[0]),
+      ? chain.extend({ feeToken: feeToken as `0x${string}` })
+      : chain,
+    transport: http(getNetwork().rpcUrl),
   })
 }
 
@@ -163,7 +197,7 @@ async function simulateCallGas(
   fallbackGas: bigint,
 ): Promise<bigint> {
   try {
-    const res = await fetch(RPC_URL, {
+    const res = await fetch(getNetwork().rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -396,7 +430,7 @@ export async function getHistory(
   // 1) Prefer the explorer JSON API. Note: the explorer must send CORS
   //    headers for this to work cross-origin (see the nvnmchain-explorer repo).
   try {
-    const url = `${nvnmchain.blockExplorers!.default.url}/address/${address}?format=json&tab=transactions&page=1`
+    const url = `${getNetwork().explorerUrl}/address/${address}?format=json&tab=transactions&page=1`
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
@@ -527,7 +561,7 @@ export async function getTokenHoldings(
 ): Promise<TokenHolding[]> {
   let candidates: { token: string; balance: bigint }[] | null = null
   try {
-    const url = `${nvnmchain.blockExplorers!.default.url}/address/${address}?format=json&tab=tokens`
+    const url = `${getNetwork().explorerUrl}/address/${address}?format=json&tab=tokens`
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
@@ -651,7 +685,7 @@ function topicToAddress(topic: string | undefined): string {
 }
 
 async function rpcGetLogs(params: unknown): Promise<any[]> {
-  const res = await fetch(RPC_URL, {
+  const res = await fetch(getNetwork().rpcUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -665,10 +699,10 @@ async function rpcGetLogs(params: unknown): Promise<any[]> {
   return Array.isArray(json?.result) ? json.result : []
 }
 
-/** Attempts the Tempo faucet RPC (not enabled on this canary). */
+/** Attempts the Tempo faucet RPC (not enabled on these chains). */
 export async function tryFaucet(address: string): Promise<string | null> {
   try {
-    const res = await fetch(nvnmchain.rpcUrls.default.http[0], {
+    const res = await fetch(getNetwork().rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

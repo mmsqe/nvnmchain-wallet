@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { shortAddress, explorerTxUrl, explorerAddressUrl } from '../chain'
+import { shortAddress, explorerTxUrl, explorerAddressUrl, feeTokenSymbol } from '../chain'
 import type { HistoryResult } from '../lib/client'
 
 export function ActivityList({
@@ -48,7 +48,7 @@ export function ActivityList({
             <strong>No activity yet</strong> — this is a brand-new address.
           </p>
           <p className="muted small">
-            Send pathUSD to this address to receive funds, then transfers and
+            Send {feeTokenSymbol()} to this address to receive funds, then transfers and
             payments will show up here automatically:
           </p>
           <div className="receive-row">
