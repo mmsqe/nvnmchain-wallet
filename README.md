@@ -31,6 +31,11 @@ Switch networks from the picker in the header — the choice is persisted in
 follows it. Passkeys (and therefore addresses) are the same on both chains:
 the address is derived from the P-256 public key, not from chain state.
 
+Under `npm run dev` the picker also offers **Local**: chain `787222` at
+`http://127.0.0.1:8545`, explorer `http://localhost:8080`, overridable with
+`VITE_LOCAL_RPC_URL` and `VITE_LOCAL_EXPLORER_URL`. Start the node with
+`--http.corsdomain '*'`, or the browser blocks its RPC.
+
 ## Features
 
 - **Network switch** — pick **NVNM Canary** or **NVNM Testnet** in the

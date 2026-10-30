@@ -14,7 +14,7 @@ import { tempo } from 'viem/tempo/chains'
  * The TIP-20 predeploy addresses are shared across networks (only the token
  * metadata — e.g. the fee token's symbol — differs per chain).
  */
-export type NetworkKey = 'canary' | 'testnet'
+export type NetworkKey = 'canary' | 'testnet' | 'local'
 
 export type NetworkConfig = {
   key: NetworkKey
@@ -56,9 +56,23 @@ export const NETWORKS: Record<NetworkKey, NetworkConfig> = {
     feeTokenSymbol: 'nUSD',
     testnet: true,
   },
+  local: {
+    key: 'local',
+    name: 'Local',
+    // A localnet's id, which a fork of canary keeps too.
+    chainId: 787222,
+    rpcUrl: import.meta.env.VITE_LOCAL_RPC_URL ?? 'http://127.0.0.1:8545',
+    explorerUrl: import.meta.env.VITE_LOCAL_EXPLORER_URL ?? 'http://localhost:8080',
+    explorerName: 'Local Explorer',
+    feeTokenSymbol: 'nUSD',
+    testnet: true,
+  },
 }
 
-export const NETWORK_KEYS = Object.keys(NETWORKS) as NetworkKey[]
+/** The networks the picker offers: a local node only under `npm run dev`. */
+export const NETWORK_KEYS = (Object.keys(NETWORKS) as NetworkKey[]).filter(
+  (key) => key !== 'local' || import.meta.env.DEV,
+)
 export const DEFAULT_NETWORK: NetworkKey = 'canary'
 
 const STORAGE_KEY = 'nvnmchain:network:v1'
@@ -77,8 +91,9 @@ export function getNetworkKey(): NetworkKey {
   } catch {
     /* storage unavailable (SSR / private mode) */
   }
-  activeKey =
-    stored && stored in NETWORKS ? (stored as NetworkKey) : DEFAULT_NETWORK
+  activeKey = NETWORK_KEYS.includes(stored as NetworkKey)
+    ? (stored as NetworkKey)
+    : DEFAULT_NETWORK
   return activeKey
 }
 

@@ -12,7 +12,8 @@ Reminders for anyone (human or agent) working in this repo. Read this first.
   can differ from Tempo mainnet).
 - There are **two networks**: NVNM Canary (MANTRA canary infrastructure — hence
   the `*.mantrachain.dev` domains) and NVNM Testnet (`*.nvnmchain.io`). Both are
-  selectable in the UI; see `NETWORKS` in `src/chain.ts`.
+  selectable in the UI; see `NETWORKS` in `src/chain.ts`. Dev builds also list
+  `local`, a node on this machine (README, "Local").
 
 ## Network facts (do not "fix" these)
 

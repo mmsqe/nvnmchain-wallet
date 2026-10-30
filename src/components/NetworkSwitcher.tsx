@@ -2,7 +2,7 @@ import { NETWORKS, NETWORK_KEYS, setNetwork, type NetworkKey } from '../chain'
 import { useNetwork } from '../lib/useNetwork'
 
 /**
- * Network picker (canary / testnet). Switching rebuilds the RPC clients and
+ * Network picker (canary / testnet, and local in dev). Switching rebuilds the RPC clients and
  * remounts the dashboard (see `App`), so all asset state is re-read from the
  * newly selected chain.
  */
