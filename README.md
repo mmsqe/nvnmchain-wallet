@@ -148,7 +148,7 @@ for missing funds.
 - [viem](https://viem.sh) + `viem/tempo` / `ox/tempo` — Tempo Transactions,
   TIP-20, fee tokens, WebAuthn/P-256 accounts
 - React 19 + Vite
-- nvnmchain explorer JSON API (`?format=json`) for explorer data
+- nvnmchain explorer JSON API (`/api/v1`) for explorer data
 
 ## Notes
 

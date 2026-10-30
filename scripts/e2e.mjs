@@ -136,7 +136,7 @@ async function main() {
   console.log('✔ empty state shows receive guidance')
 
   // Intercept the explorer API → feed fake transactions for this address
-  await page.route('**/api/v2/addresses/*/transactions', async (route) => {
+  await page.route('**/api/v1/addresses/*/txs', async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -144,22 +144,22 @@ async function main() {
         items: [
           {
             hash: '0x' + 'a1'.repeat(32),
-            status: 'ok',
-            timestamp: '2026-08-07T12:00:00.000000Z',
-            from: { hash: '0x' + '11'.repeat(20) },
-            to: { hash: address },
-            fee: { value: '168274800000000' },
+            status: 1,
+            timestamp: 1786104000,
+            from_addr: '0x' + '11'.repeat(20),
+            to_addr: address,
+            fee_amount: '168274800000000',
           },
           {
             hash: '0x' + 'b2'.repeat(32),
-            status: 'ok',
-            timestamp: '2026-08-07T13:00:00.000000Z',
-            from: { hash: address },
-            to: { hash: '0x' + '22'.repeat(20) },
-            fee: { value: '168274800000000' },
+            status: 1,
+            timestamp: 1786107600,
+            from_addr: address,
+            to_addr: '0x' + '22'.repeat(20),
+            fee_amount: '168274800000000',
           },
         ],
-        next_page_params: null,
+        next_page: null,
       }),
     })
   })

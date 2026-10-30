@@ -58,16 +58,19 @@ Reminders for anyone (human or agent) working in this repo. Read this first.
   Rust/SQLite explorer (repo `yihuang/nvnmchain-explorer`), one instance per
   network, same routes/JSON shape. The old
   `blockscout.nvnm.canary.mantrachain.dev` is **dead (HTTP 525)**.
-- **Every page doubles as JSON**: append `?format=json` (or send
-  `Accept: application/json`). Routes: `/address/{addr}`, `/tx/{hash}`,
-  `/token/{addr}`, `/block/{id}`, `/blocks`, `/tokens`, `/search`.
+- **JSON lives under `/api/v1`** (the explorer README lists every route). A
+  list is `{"items": [...], "next_page": n}`, paged by `?page=n` until `n` is
+  null. Pages still answer `?format=json`, but in their templates' shape.
 - Transaction history (what `getHistory` uses):
-  `{EXPLORER_URL}/address/{addr}?format=json&tab=transactions&page=1`
+  `{EXPLORER_URL}/api/v1/addresses/{addr}/txs`
   (`EXPLORER_URL` = the active network's explorer — `getNetwork().explorerUrl`)
-  → JSON object with a `transactions[]` array. Tx fields: `hash`,
+  → `items[]`. Tx fields: `hash`,
   `from_addr`, `to_addr` (may be null), `status` (**`1`=success, `0`=reverted**),
   `timestamp` (**unix seconds**), `fee_amount`, `fee_token`, `block_number`.
   There is **no Blockscout-style `/api/v2`** anymore.
+- Token holdings (what `getTokenHoldings` uses):
+  `{EXPLORER_URL}/api/v1/addresses/{addr}/holdings` → `items[]` with `token`
+  and `balance` (a decimal string), unpaged.
 - `/api/events` is a **Server-Sent Events stream**, not a JSON REST endpoint.
 - Link URLs: `{EXPLORER_URL}/tx/{hash}` and `{EXPLORER_URL}/address/{addr}`.
   (`chain.ts` has `explorerTxUrl` / `explorerAddressUrl` helpers.)

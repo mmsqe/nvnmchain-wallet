@@ -430,11 +430,11 @@ export async function getHistory(
   // 1) Prefer the explorer JSON API. Note: the explorer must send CORS
   //    headers for this to work cross-origin (see the nvnmchain-explorer repo).
   try {
-    const url = `${getNetwork().explorerUrl}/address/${address}?format=json&tab=transactions&page=1`
+    const url = `${getNetwork().explorerUrl}/api/v1/addresses/${address}/txs`
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
-      const items: any[] = data?.transactions ?? []
+      const items: any[] = data?.items ?? []
       return {
         items: items.slice(0, limit).map((t) => ({
           hash: t.hash,
@@ -561,11 +561,11 @@ export async function getTokenHoldings(
 ): Promise<TokenHolding[]> {
   let candidates: { token: string; balance: bigint }[] | null = null
   try {
-    const url = `${getNetwork().explorerUrl}/address/${address}?format=json&tab=tokens`
+    const url = `${getNetwork().explorerUrl}/api/v1/addresses/${address}/holdings`
     const res = await fetch(url)
     if (res.ok) {
       const data = await res.json()
-      const holdings: any[] = data?.holdings ?? []
+      const holdings: any[] = data?.items ?? []
       candidates = holdings
         .filter(
           (h) => h.token && h.token.toLowerCase() !== PATHUSD.toLowerCase(),
